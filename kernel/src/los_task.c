@@ -385,16 +385,24 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsTaskInit(VOID)
     UINT32 size;
     UINT32 index;
 
-    size = (g_taskMaxNum + 1) * sizeof(LosTaskCB);
+    // g_taskMaxNum = LOSCFG_BASE_CORE_TSK_LIMIT + 1 = 21
+    // kernel/src/los_init.c   OsRegister(VOID)
+    size = (g_taskMaxNum + 1) * sizeof(LosTaskCB);  
     g_taskCBArray = (LosTaskCB *)LOS_MemAlloc(m_aucSysMem0, size);
     if (g_taskCBArray == NULL) {
         return LOS_ERRNO_TSK_NO_MEMORY;
     }
 
     // Ignore the return code when matching CSEC rule 6.6(1).
+    // 初始化 g_taskCBArray 空间为 0 值
     (VOID)memset_s(g_taskCBArray, size, 0, size);
+
+    // 初始化g_losFreeTask 和 g_taskRecycleList
     LOS_ListInit(&g_losFreeTask);
     LOS_ListInit(&g_taskRecycleList);
+
+    // 初始化 任务数组中的元素[0:20]，status为 未使用，taskid为index
+    // 将 pendList 使用尾插法插入 g_losFreeTask 
     for (index = 0; index <= LOSCFG_BASE_CORE_TSK_LIMIT; index++) {
         g_taskCBArray[index].taskStatus = OS_TASK_STATUS_UNUSED;
         g_taskCBArray[index].taskID = index;
@@ -402,13 +410,20 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsTaskInit(VOID)
     }
 
     // Ignore the return code when matching CSEC rule 6.6(4).
+    /**
+     * typedef struct {
+     *      LosTaskCB   *runTask;
+     *      LosTaskCB   *newTask;
+     *   } LosTask;
+     */
+    // g_losTask.runTask 指向 任务数组的最后一个元素（0值），优先级设为最低 32
     (VOID)memset_s((VOID *)(&g_losTask), sizeof(g_losTask), 0, sizeof(g_losTask));
     g_losTask.runTask = &g_taskCBArray[g_taskMaxNum];
-    g_losTask.runTask->taskID = index;
+    g_losTask.runTask->taskID = index; //index = 21
     g_losTask.runTask->taskStatus = (OS_TASK_STATUS_UNUSED | OS_TASK_STATUS_RUNNING);
     g_losTask.runTask->priority = OS_TASK_PRIORITY_LOWEST + 1;
-
-    g_idleTaskID = OS_INVALID;
+    
+    g_idleTaskID = OS_INVALID; // (UINT32)(-1)
     return OsSchedInit();
 }
 
@@ -745,7 +760,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskCreateOnly(UINT32 *taskID, TSK_INIT_PARAM_S
     UINT32 retVal;
 
     if (taskID == NULL) {
-        return LOS_ERRNO_TSK_ID_INVALID;
+        return LOS_ERRNO_TSK_IDOS_TCB_FROM_TID_INVALID;
     }
 
     retVal = OsTaskInitParamCheck(taskInitParam);
@@ -758,7 +773,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskCreateOnly(UINT32 *taskID, TSK_INIT_PARAM_S
     intSave = LOS_IntLock();
     if (LOS_ListEmpty(&g_losFreeTask)) {
         LOS_IntRestore(intSave);
-        return LOS_ERRNO_TSK_TCB_UNAVAILABLE;
+        return LOS_ERRNO_TSK_TCOS_TCB_FROM_TIDB_UNAVAILABLE;
     }
 
     taskCB = OS_TCB_FROM_PENDLIST(LOS_DL_LIST_FIRST(&g_losFreeTask));
@@ -799,11 +814,11 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskCreate(UINT32 *taskID, TSK_INIT_PARAM_S *ta
     UINT32 intSave;
     LosTaskCB *taskCB = NULL;
 
-    retVal = LOS_TaskCreateOnly(taskID, taskInitParam);
+    retVal = LOS_TaskCreateOnly(taskID, taskInitParam);  // Create a task and suspend
     if (retVal != LOS_OK) {
         return retVal;
     }
-    taskCB = OS_TCB_FROM_TID(*taskID);
+    taskCB = OS_TCB_FROM_TID(*taskID); // 从任务数组中获取该任务
 
     intSave = LOS_IntLock();
 

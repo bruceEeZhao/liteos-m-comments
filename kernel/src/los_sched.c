@@ -420,25 +420,41 @@ UINT64 OsSchedGetNextExpireTime(UINT64 startTime)
     return OsGetNextExpireTime(startTime, OS_TICK_RESPONSE_PRECISION);
 }
 
+/**
+ * @brief 初始化优先级队列（32个）
+ * 
+ * @return UINT32 
+ */
 UINT32 OsSchedInit(VOID)
 {
     UINT16 pri;
+    // 初始化每一个双向链表，前向后向指针均指向本身
     for (pri = 0; pri < OS_PRIORITY_QUEUE_NUM; pri++) {
         LOS_ListInit(&g_priQueueList[pri]);
     }
     g_queueBitmap = 0;
 
+    // g_taskSortLinkList 中只有一个成员 LOS_DL_LIST sortLink;
     g_taskSortLinkList = OsGetSortLinkAttribute(OS_SORT_LINK_TASK);
     if (g_taskSortLinkList == NULL) {
         return LOS_NOK;
     }
 
+    // 初始化成员 sortLink
     OsSortLinkInit(g_taskSortLinkList);
+    // 设置 g_schedResponseTime 为 ((UINT64)-1)
     g_schedResponseTime = OS_SCHED_MAX_RESPONSE_TIME;
 
     return LOS_OK;
 }
 
+/**
+ * @brief 选取一个任务
+ *        1. 如果g_queueBitmap不为0,则获取优先级最高的队列中的一个任务（pendlist），从优先级队列（32个优先级）中
+ *        2. 否则根据TaskId（下标）从task数组中获取一个task
+ * 
+ * @return LosTaskCB* 
+ */
 LosTaskCB *OsGetTopTask(VOID)
 {
     UINT32 priority;
