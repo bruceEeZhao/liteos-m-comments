@@ -426,7 +426,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsTaskInit(VOID)
      *      LosTaskCB   *newTask;
      *   } LosTask;
      */
-    // g_losTask.runTask 指向 任务数组的最后一个元素（0值），优先级设为最低 32
+    // g_losTask.runTask 指向 任务数组的最后一个元素（0值），优先级设为 32
     (VOID)memset_s((VOID *)(&g_losTask), sizeof(g_losTask), 0, sizeof(g_losTask));
     g_losTask.runTask = &g_taskCBArray[g_taskMaxNum];
     g_losTask.runTask->taskID = index; //index = 21
@@ -440,7 +440,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsTaskInit(VOID)
 
 /*****************************************************************************
  Function    : OsIdleTaskCreate
- Description : Create idle task.
+ Description : Create idle task. 内核初始化时创建该任务
  Input       : None
  Output      : None
  Return      : LOS_OK on success or error code on failure
@@ -680,23 +680,29 @@ LITE_OS_SEC_TEXT_INIT STATIC_INLINE UINT32 OsTaskInitParamCheck(TSK_INIT_PARAM_S
         return LOS_ERRNO_TSK_ENTRY_NULL;
     }
 
+    // 优先级的范围是[0:31]，31是最低优先级，超过31非法
     if ((taskInitParam->usTaskPrio) > OS_TASK_PRIORITY_LOWEST) {
         return LOS_ERRNO_TSK_PRIOR_ERROR;
     }
 
+    // 如果优先级是最低优先级31,且task的执行函数不是 OsIdleTask，非法
+    // 即,系统中只能有一个最低优先级的任务，且必须是 OsIdleTask（该task在内核初始化时创建）
     if (((taskInitParam->usTaskPrio) == OS_TASK_PRIORITY_LOWEST)
         && (taskInitParam->pfnTaskEntry != OS_IDLE_TASK_ENTRY)) {
         return LOS_ERRNO_TSK_PRIOR_ERROR;
     }
 
+    // 栈太大，非法
     if (taskInitParam->uwStackSize > LOSCFG_SYS_HEAP_SIZE) {
         return LOS_ERRNO_TSK_STKSZ_TOO_LARGE;
     }
 
+    // 如果栈大小为0,给一个默认的栈大小，0x2d0
     if (taskInitParam->uwStackSize == 0) {
         taskInitParam->uwStackSize = LOSCFG_BASE_CORE_TSK_DEFAULT_STACK_SIZE;
     }
 
+    // 栈太小，非法，合法栈大小在[0x130:0x10000]
     if (taskInitParam->uwStackSize < LOSCFG_BASE_CORE_TSK_MIN_STACK_SIZE) {
         return LOS_ERRNO_TSK_STKSZ_TOO_SMALL;
     }
@@ -726,9 +732,12 @@ STATIC UINT32 OsNewTaskInit(LosTaskCB *taskCB, TSK_INIT_PARAM_S *taskInitParam)
     taskCB->sig             = NULL;
 #endif
 
+    // 设置 (&taskCB->sortList))->responseTime = (((UINT64)-1)))
     SET_SORTLIST_VALUE(&taskCB->sortList, OS_SORT_LINK_INVALID_TIME);
+    // eventCB->uwEventID = 0; 初始化 eventCB->stEventList
     LOS_EventInit(&(taskCB->event));
 
+    // 保留字段
     if (taskInitParam->uwResved & LOS_TASK_ATTR_JOINABLE) {
         taskCB->taskStatus |= OS_TASK_FLAG_JOINABLE;
         LOS_ListInit(&taskCB->joinList);
@@ -743,7 +752,8 @@ STATIC UINT32 OsNewTaskInit(LosTaskCB *taskCB, TSK_INIT_PARAM_S *taskInitParam)
         UINTPTR stackPtr = (UINTPTR)LOS_MemAllocAlign(OS_TASK_STACK_ADDR, stackSize, OS_TASK_STACK_PROTECT_SIZE);
         taskCB->topOfStack = stackPtr + OS_TASK_STACK_PROTECT_SIZE;
 #else
-        // OS_TASK_STACK_ADDR = (&m_aucSysMem0[0]) TODO ...
+        // OS_TASK_STACK_ADDR = (&m_aucSysMem0[0]) 
+        // m_aucSysMem0 = g_memStart，在 OsMemSystemInit 中被赋值
         // 申请栈空间
         taskCB->topOfStack = (UINTPTR)LOS_MemAllocAlign(OS_TASK_STACK_ADDR, taskCB->stackSize,
                                                         LOSCFG_STACK_POINT_ALIGN_SIZE);
@@ -764,6 +774,7 @@ STATIC UINT32 OsNewTaskInit(LosTaskCB *taskCB, TSK_INIT_PARAM_S *taskInitParam)
                    (INT32)(OS_TASK_STACK_INIT & 0xFF), taskCB->stackSize);
 
     *((UINT32 *)taskCB->topOfStack) = OS_TASK_MAGIC_WORD;
+    // 初始化task 上下文context，context是寄存器的值
     taskCB->stackPointer = ArchTskStackInit(taskCB->taskID, taskCB->stackSize, (VOID *)taskCB->topOfStack);
     return LOS_OK;
 }

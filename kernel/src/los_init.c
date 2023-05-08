@@ -143,7 +143,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_KernelInit(VOID)
     OsBackTraceInit();
 #endif
 
-    OsRegister(); // 设置g_taskMaxNum
+    OsRegister(); // 设置g_taskMaxNum = 21
 
 #ifdef LOSCFG_KERNEL_LMS
     OsLmsInit();
