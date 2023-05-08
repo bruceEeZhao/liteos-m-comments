@@ -74,6 +74,10 @@ VOID OsSchedResetSchedResponseTime(UINT64 responseTime)
     }
 }
 
+/// @brief 更新taskCB->timeSlice -= incTime，更新taskCB->startTime = currTime
+/// @param taskCB 
+/// @param currTime 
+/// @return 
 STATIC INLINE VOID OsTimeSliceUpdate(LosTaskCB *taskCB, UINT64 currTime)
 {
     LOS_ASSERT(currTime >= taskCB->startTime);
@@ -147,21 +151,29 @@ STATIC INLINE VOID OsSchedPriQueueEnHead(LOS_DL_LIST *priqueueItem, UINT32 prior
      * other lists, task pend node will restored as zero.
      */
     if (LOS_ListEmpty(&g_priQueueList[priority])) {
+        // 意思是优先级为priority的队列要加入元素，不空
         g_queueBitmap |= PRIQUEUE_PRIOR0_BIT >> priority;
     }
 
+    // 把task加入优先级为priority的队列头部
     LOS_ListAdd(&g_priQueueList[priority], priqueueItem);
 }
 
 STATIC INLINE VOID OsSchedPriQueueEnTail(LOS_DL_LIST *priqueueItem, UINT32 priority)
 {
     if (LOS_ListEmpty(&g_priQueueList[priority])) {
+        // 意思是优先级为priority的队列要加入元素，不空
         g_queueBitmap |= PRIQUEUE_PRIOR0_BIT >> priority;
     }
 
+    // 把task加入优先级为priority的队列尾部
     LOS_ListTailInsert(&g_priQueueList[priority], priqueueItem);
 }
 
+/// @brief 将任务从优先级队列删除，如果删除后该队列为空，则修改g_queueBitmap
+/// @param priqueueItem 
+/// @param priority 
+/// @return 
 STATIC INLINE VOID OsSchedPriQueueDelete(LOS_DL_LIST *priqueueItem, UINT32 priority)
 {
     LOS_ListDelete(priqueueItem);
@@ -222,12 +234,17 @@ STATIC INLINE BOOL OsSchedScanTimerList(VOID)
     return needSchedule;
 }
 
+/// @brief 将任务加入优先级队列中，如果时间片大于最小时间片，插入头部，否则插入尾部
+/// @param taskCB 
+/// @return 
 VOID OsSchedTaskEnQueue(LosTaskCB *taskCB)
-{
+{   
+    // 断言：task状态应该是非ready
     LOS_ASSERT(!(taskCB->taskStatus & OS_TASK_STATUS_READY));
 
     if (taskCB->taskID != g_idleTaskID) {
         if (taskCB->timeSlice > OS_TIME_SLICE_MIN) {
+            // 如果时间片大于最小时间片，则把task加入优先级为priority的队列中。
             OsSchedPriQueueEnHead(&taskCB->pendList, taskCB->priority);
         } else {
             taskCB->timeSlice = OS_SCHED_TIME_SLICES;
@@ -242,13 +259,17 @@ VOID OsSchedTaskEnQueue(LosTaskCB *taskCB)
     taskCB->taskStatus |= OS_TASK_STATUS_READY;
 }
 
+/// @brief 如果任务是就绪态，则将该任务从优先级队列删除，并取消就绪态
+/// @param taskCB 
+/// @return 
 VOID OsSchedTaskDeQueue(LosTaskCB *taskCB)
 {
+    // 如果任务是就绪态，将任务从优先级队列删除
     if (taskCB->taskStatus & OS_TASK_STATUS_READY) {
         if (taskCB->taskID != g_idleTaskID) {
             OsSchedPriQueueDelete(&taskCB->pendList, taskCB->priority);
         }
-
+        // 取消就绪态
         taskCB->taskStatus &= ~OS_TASK_STATUS_READY;
     }
 }
@@ -500,29 +521,37 @@ BOOL OsSchedTaskSwitch(VOID)
     UINT64 endTime;
     BOOL isTaskSwitch = FALSE;
     LosTaskCB *runTask = g_losTask.runTask;
+    // 更新taskCB->timeSlice -= incTime，更新taskCB->startTime = currTime
     OsTimeSliceUpdate(runTask, OsGetCurrSchedTimeCycle());
 
     if (runTask->taskStatus & (OS_TASK_STATUS_PEND_TIME | OS_TASK_STATUS_DELAY)) {
+        // 按task responseTime大小顺序插入有序链表，head->next 是最小的
         OsAdd2SortLink(&runTask->sortList, runTask->startTime, runTask->waitTimes, OS_SORT_LINK_TASK);
-    } else if (!(runTask->taskStatus & OS_TASK_BLOCKED_STATUS)) {
+    } else if (!(runTask->taskStatus & OS_TASK_BLOCKED_STATUS)) { // 非阻塞状态
+        // 将任务加入优先级队列中，如果时间片大于最小时间片，插入头部，否则插入尾部
         OsSchedTaskEnQueue(runTask);
     }
 
+    // 获取一个task
     LosTaskCB *newTask = OsGetTopTask();
     g_losTask.newTask = newTask;
 
+    // 如果 runtask 和 newtask 不同，则切换task的状态，
+    // 把newtask的状态设为running， runTask 状态设为非running
+    // isTaskSwitch设为True
     if (runTask != newTask) {
 #if (LOSCFG_BASE_CORE_TSK_MONITOR == 1)
         OsTaskSwitchCheck();
 #endif
         runTask->taskStatus &= ~OS_TASK_STATUS_RUNNING;
         newTask->taskStatus |= OS_TASK_STATUS_RUNNING;
-        newTask->startTime = runTask->startTime;
+        newTask->startTime = runTask->startTime;   // 为什么starttime相同？TODO
         isTaskSwitch = TRUE;
 
         OsHookCall(LOS_HOOK_TYPE_TASK_SWITCHEDIN);
     }
 
+    // 如果newTask是就绪态，则将该任务从优先级队列删除，并取消就绪态
     OsSchedTaskDeQueue(newTask);
 
     if (newTask->taskID != g_idleTaskID) {

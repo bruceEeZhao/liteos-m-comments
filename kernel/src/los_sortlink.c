@@ -48,6 +48,10 @@ UINT32 OsSortLinkInit(SortLinkAttribute *sortLinkHeader)
     return LOS_OK;
 }
 
+/// @brief 按responseTime大小顺序插入链表，head->next 是最小的
+/// @param sortLinkHeader 
+/// @param sortList 
+/// @return 
 STATIC INLINE VOID OsAddNode2SortLink(SortLinkAttribute *sortLinkHeader, SortLinkList *sortList)
 {
     LOS_DL_LIST *head = (LOS_DL_LIST *)&sortLinkHeader->sortLink;
@@ -78,6 +82,12 @@ STATIC INLINE VOID OsAddNode2SortLink(SortLinkAttribute *sortLinkHeader, SortLin
     } while (1);
 }
 
+/// @brief 计算node 的 responseTime, 按responseTime大小顺序插入有序链表，head->next 是最小的
+/// @param node 
+/// @param startTime 
+/// @param waitTicks 
+/// @param type 
+/// @return 
 VOID OsAdd2SortLink(SortLinkList *node, UINT64 startTime, UINT32 waitTicks, SortLinkType type)
 {
     UINT32 intSave;
@@ -92,7 +102,9 @@ VOID OsAdd2SortLink(SortLinkList *node, UINT64 startTime, UINT32 waitTicks, Sort
     }
 
     intSave = LOS_IntLock();
+    // 计算node 的 responseTime
     SET_SORTLIST_VALUE(node, startTime + OS_SYS_TICK_TO_CYCLE(waitTicks));
+    // 按responseTime大小顺序插入链表，head->next 是最小的
     OsAddNode2SortLink(sortLinkHeader, node);
     LOS_IntRestore(intSave);
 }

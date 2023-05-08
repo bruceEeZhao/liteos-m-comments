@@ -83,6 +83,7 @@ STATIC INLINE UINT64 GetSortLinkNextExpireTime(SortLinkAttribute *sortHeader, UI
     LOS_DL_LIST *head = &sortHeader->sortLink;
     LOS_DL_LIST *list = head->pstNext;
 
+    // 如果有序链表为空
     if (LOS_ListEmpty(head)) {
         return OS_SORT_LINK_UINT64_MAX - tickPrecision;
     }

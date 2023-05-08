@@ -79,6 +79,11 @@ LITE_OS_SEC_TEXT_MINOR VOID ArchSysExit(VOID)
     }
 }
 
+/// @brief 设置task的上下文
+/// @param taskID 
+/// @param stackSize 
+/// @param topStack 
+/// @return 
 LITE_OS_SEC_TEXT_INIT VOID *ArchTskStackInit(UINT32 taskID, UINT32 stackSize, VOID *topStack)
 {
     TaskContext *context = (TaskContext *)((UINTPTR)topStack + stackSize - sizeof(TaskContext));

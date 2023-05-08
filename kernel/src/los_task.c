@@ -126,6 +126,9 @@ STATIC_INLINE UINT32 OsCheckTaskIDValid(UINT32 taskID)
     return ret;
 }
 
+/// @brief 将task重置为0值，状态设为UNUSED，加入g_losFreeTask链表
+/// @param taskCB 
+/// @return 
 STATIC INLINE VOID OsInsertTCBToFreeList(LosTaskCB *taskCB)
 {
     UINT32 taskID = taskCB->taskID;
@@ -135,6 +138,10 @@ STATIC INLINE VOID OsInsertTCBToFreeList(LosTaskCB *taskCB)
     LOS_ListAdd(&g_losFreeTask, &taskCB->pendList);
 }
 
+/// @brief 释放task占用的栈空间
+/// @param taskCB 
+/// @param stackPtr 
+/// @return 
 STATIC VOID OsRecycleTaskResources(LosTaskCB *taskCB, UINTPTR *stackPtr)
 {
     if ((taskCB->taskStatus & OS_TASK_FLAG_STACK_FREE) && (taskCB->topOfStack != 0)) {
@@ -158,11 +165,14 @@ STATIC VOID OsRecyleFinishedTask(VOID)
     UINTPTR stackPtr;
 
     intSave = LOS_IntLock();
-    while (!LOS_ListEmpty(&g_taskRecycleList)) {
+    while (!LOS_ListEmpty(&g_taskRecycleList)) {  // 当g_taskRecycleList非空
+        // 从 g_taskRecycleList 链表中取出第一个元素，并获取指向任务控制块的指针。
         taskCB = OS_TCB_FROM_PENDLIST(LOS_DL_LIST_FIRST(&g_taskRecycleList));
+        // 删除第一个元素
         LOS_ListDelete(LOS_DL_LIST_FIRST(&g_taskRecycleList));
         stackPtr = 0;
-        OsRecycleTaskResources(taskCB, &stackPtr);
+        // 释放task占用的栈空间
+        OsRecycleTaskResources(taskCB, &stackPtr); 
         LOS_IntRestore(intSave);
 
         (VOID)LOS_MemFree(OS_TASK_STACK_ADDR, (VOID *)stackPtr);
@@ -653,6 +663,9 @@ LITE_OS_SEC_TEXT_INIT VOID OsTaskEntry(UINT32 taskID)
     }
 }
 
+/// @brief 检查参数是否合法
+/// @param taskInitParam 
+/// @return 
 LITE_OS_SEC_TEXT_INIT STATIC_INLINE UINT32 OsTaskInitParamCheck(TSK_INIT_PARAM_S *taskInitParam)
 {
     if (taskInitParam == NULL) {
@@ -690,6 +703,10 @@ LITE_OS_SEC_TEXT_INIT STATIC_INLINE UINT32 OsTaskInitParamCheck(TSK_INIT_PARAM_S
     return LOS_OK;
 }
 
+/// @brief 使用taskInitParam给taskCB对象初始化，设置task栈
+/// @param taskCB 
+/// @param taskInitParam 
+/// @return 
 STATIC UINT32 OsNewTaskInit(LosTaskCB *taskCB, TSK_INIT_PARAM_S *taskInitParam)
 {
     taskCB->arg             = taskInitParam->uwArg;
@@ -717,21 +734,26 @@ STATIC UINT32 OsNewTaskInit(LosTaskCB *taskCB, TSK_INIT_PARAM_S *taskInitParam)
         LOS_ListInit(&taskCB->joinList);
     }
 
+    // 如果栈地址为NULL
     if (taskInitParam->stackAddr == (UINTPTR)NULL) {
+        // 栈大小以8字节对齐
         taskCB->stackSize = ALIGN(taskInitParam->uwStackSize, OS_TASK_STACK_ADDR_ALIGN);
 #if (LOSCFG_EXC_HARDWARE_STACK_PROTECTION == 1)
         UINT32 stackSize = taskCB->stackSize + OS_TASK_STACK_PROTECT_SIZE;
         UINTPTR stackPtr = (UINTPTR)LOS_MemAllocAlign(OS_TASK_STACK_ADDR, stackSize, OS_TASK_STACK_PROTECT_SIZE);
         taskCB->topOfStack = stackPtr + OS_TASK_STACK_PROTECT_SIZE;
 #else
+        // OS_TASK_STACK_ADDR = (&m_aucSysMem0[0]) TODO ...
+        // 申请栈空间
         taskCB->topOfStack = (UINTPTR)LOS_MemAllocAlign(OS_TASK_STACK_ADDR, taskCB->stackSize,
                                                         LOSCFG_STACK_POINT_ALIGN_SIZE);
 #endif
+        // 栈空间申请失败
         if (taskCB->topOfStack == (UINTPTR)NULL) {
             return LOS_ERRNO_TSK_NO_MEMORY;
         }
         taskCB->taskStatus |= OS_TASK_FLAG_STACK_FREE;
-    } else {
+    } else { // 栈地址不为NULL
         taskCB->topOfStack = LOS_Align(taskInitParam->stackAddr, LOSCFG_STACK_POINT_ALIGN_SIZE);
         taskCB->stackSize = taskInitParam->uwStackSize - (taskCB->topOfStack - taskInitParam->stackAddr);
         taskCB->stackSize = TRUNCATE(taskCB->stackSize, OS_TASK_STACK_ADDR_ALIGN);
@@ -763,25 +785,32 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskCreateOnly(UINT32 *taskID, TSK_INIT_PARAM_S
         return LOS_ERRNO_TSK_ID_INVALID;
     }
 
-    retVal = OsTaskInitParamCheck(taskInitParam);
+    retVal = OsTaskInitParamCheck(taskInitParam); // 检查参数是否合法
     if (retVal != LOS_OK) {
         return retVal;
     }
 
+    // 回收运行结束的Task
     OsRecyleFinishedTask();
 
     intSave = LOS_IntLock();
+    // 如果g_losFreeTask为空，解锁，返回
     if (LOS_ListEmpty(&g_losFreeTask)) {
         LOS_IntRestore(intSave);
         return LOS_ERRNO_TSK_TCB_UNAVAILABLE;
     }
 
+    // 从g_losFreeTask中选择第一个元素,并获取指向任务控制块的指针。
     taskCB = OS_TCB_FROM_PENDLIST(LOS_DL_LIST_FIRST(&g_losFreeTask));
+    // 从g_losFreeTask删除第一个元素
     LOS_ListDelete(LOS_DL_LIST_FIRST(&g_losFreeTask));
+    // 解锁
     LOS_IntRestore(intSave);
 
+    // 这个函数比较重要，给task成员赋初值，设置栈等
     retVal = OsNewTaskInit(taskCB, taskInitParam);
     if (retVal != LOS_OK) {
+        // 如果失败，把task加入g_losFreeTask链表，释放task
         intSave = LOS_IntLock();
         OsInsertTCBToFreeList(taskCB);
         LOS_IntRestore(intSave);
@@ -796,6 +825,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskCreateOnly(UINT32 *taskID, TSK_INIT_PARAM_S
     g_cpup[taskCB->taskID].status = taskCB->taskStatus;
     LOS_IntRestore(intSave);
 #endif
+    // 传入的taskID会被taskCB->taskID赋值
     *taskID = taskCB->taskID;
     OsHookCall(LOS_HOOK_TYPE_TASK_CREATE, taskCB);
     return retVal;
@@ -818,13 +848,15 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskCreate(UINT32 *taskID, TSK_INIT_PARAM_S *ta
     if (retVal != LOS_OK) {
         return retVal;
     }
-    taskCB = OS_TCB_FROM_TID(*taskID); // 从任务数组中获取该任务
+    taskCB = OS_TCB_FROM_TID(*taskID); // 根据taskID从任务数组中获取该任务
 
     intSave = LOS_IntLock();
-
+    
+    // 将task插入优先级队列中
     OsSchedTaskEnQueue(taskCB);
     LOS_IntRestore(intSave);
 
+    // 如果g_taskScheduled为True开启调度
     if (g_taskScheduled) {
         LOS_Schedule();
     }
