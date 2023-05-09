@@ -102,13 +102,19 @@ VOID OsAdd2SortLink(SortLinkList *node, UINT64 startTime, UINT32 waitTicks, Sort
     }
 
     intSave = LOS_IntLock();
-    // 计算node 的 responseTime
+    // 计算node 的 responseTime，responseTime = (startTime + (((UINT64)(waitTicks) * g_sysClock) / 1000)))
     SET_SORTLIST_VALUE(node, startTime + OS_SYS_TICK_TO_CYCLE(waitTicks));
     // 按responseTime大小顺序插入链表，head->next 是最小的
     OsAddNode2SortLink(sortLinkHeader, node);
     LOS_IntRestore(intSave);
 }
 
+/**
+ * @brief 将节点从sortlist中删除
+ * 
+ * @param node 
+ * @return VOID 
+ */
 VOID OsDeleteSortLink(SortLinkList *node)
 {
     UINT32 intSave;
@@ -121,6 +127,12 @@ VOID OsDeleteSortLink(SortLinkList *node)
     LOS_IntRestore(intSave);
 }
 
+/**
+ * @brief 根据type获取sortlist
+ * 
+ * @param type 
+ * @return SortLinkAttribute* 
+ */
 SortLinkAttribute *OsGetSortLinkAttribute(SortLinkType type)
 {
     if (type == OS_SORT_LINK_TASK) {

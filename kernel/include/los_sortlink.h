@@ -72,9 +72,16 @@ STATIC INLINE UINT64 OsSortLinkGetRemainTime(UINT64 currTime, const SortLinkList
     return (targetSortList->responseTime - currTime);
 }
 
+/**
+ * @brief 从sortlist中删除节点，设置sortList->responseTime = (UINT64)-1
+ * 
+ * @param sortList 
+ * @return STATIC 
+ */
 STATIC INLINE VOID OsDeleteNodeSortLink(SortLinkList *sortList)
 {
     LOS_ListDelete(&sortList->sortLinkNode);
+    // 设置responseTime = (UINT64)-1
     SET_SORTLIST_VALUE(sortList, OS_SORT_LINK_INVALID_TIME);
 }
 

@@ -189,6 +189,12 @@ LITE_OS_SEC_TEXT UINT32 LOS_EventWrite(PEVENT_CB_S eventCB, UINT32 events)
     return LOS_OK;
 }
 
+/**
+ * @brief 销毁event列表，如果event列表非空则不能销毁
+ * 
+ * @param eventCB 
+ * @return LITE_OS_SEC_TEXT_INIT 
+ */
 LITE_OS_SEC_TEXT_INIT UINT32 LOS_EventDestroy(PEVENT_CB_S eventCB)
 {
     UINT32 intSave;
@@ -196,7 +202,8 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_EventDestroy(PEVENT_CB_S eventCB)
         return LOS_ERRNO_EVENT_PTR_NULL;
     }
     intSave = LOS_IntLock();
-
+    
+    // event列表非空则不能删除
     if (!LOS_ListEmpty(&eventCB->stEventList)) {
         LOS_IntRestore(intSave);
         return LOS_ERRNO_EVENT_SHOULD_NOT_DESTROYED;

@@ -89,6 +89,7 @@ LITE_OS_SEC_TEXT_INIT VOID *ArchTskStackInit(UINT32 taskID, UINT32 stackSize, VO
     TaskContext *context = (TaskContext *)((UINTPTR)topStack + stackSize - sizeof(TaskContext));
 
     context->mstatus = RISCV_MSTATUS_MPP | RISCV_MSTATUS_MPIE;
+    // pc指向OsTaskEntry
     context->mepc = (UINT32)(UINTPTR)OsTaskEntry;
     context->tp = TP_INIT_VALUE;
     context->sp = SP_INIT_VALUE;

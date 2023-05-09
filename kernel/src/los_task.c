@@ -113,6 +113,15 @@ STATIC VOID (*PmEnter)(VOID) = NULL;
 TaskSwitchInfo g_taskSwitchInfo;
 #endif
 
+/**
+ * @brief 判断taskID是否合法，非法情况包括：
+ * 1. taskID = g_idleTaskID idle task 最低优先级 或 g_swtmrTaskID timer task 最高优先级
+ * 2. taskID 大于系统最大taskNum g_taskMaxNum=21
+ * 因此，用户的taskID范围是[1:20]
+ * 
+ * @param taskID 
+ * @return STATIC_INLINE 
+ */
 STATIC_INLINE UINT32 OsCheckTaskIDValid(UINT32 taskID)
 {
     UINT32 ret = LOS_OK;
@@ -127,6 +136,7 @@ STATIC_INLINE UINT32 OsCheckTaskIDValid(UINT32 taskID)
 }
 
 /// @brief 将task重置为0值，状态设为UNUSED，加入g_losFreeTask链表
+///        在任务初始化失败，或在task被系统回收时调用
 /// @param taskCB 
 /// @return 
 STATIC INLINE VOID OsInsertTCBToFreeList(LosTaskCB *taskCB)
@@ -138,7 +148,7 @@ STATIC INLINE VOID OsInsertTCBToFreeList(LosTaskCB *taskCB)
     LOS_ListAdd(&g_losFreeTask, &taskCB->pendList);
 }
 
-/// @brief 释放task占用的栈空间
+/// @brief 将task栈指针topOfStack赋值给stackPtr，并将 topOfStack 修改为NULL，并未真正释放栈空间
 /// @param taskCB 
 /// @param stackPtr 
 /// @return 
@@ -158,6 +168,11 @@ STATIC VOID OsRecycleTaskResources(LosTaskCB *taskCB, UINTPTR *stackPtr)
     }
 }
 
+/**
+ * @brief 回收执行完毕的task，将task从g_taskRecycleList中删除，并释放task栈空间
+ * 
+ * @return STATIC 
+ */
 STATIC VOID OsRecyleFinishedTask(VOID)
 {
     LosTaskCB *taskCB = NULL;
@@ -171,16 +186,22 @@ STATIC VOID OsRecyleFinishedTask(VOID)
         // 删除第一个元素
         LOS_ListDelete(LOS_DL_LIST_FIRST(&g_taskRecycleList));
         stackPtr = 0;
-        // 释放task占用的栈空间
+        // 将task栈指针topOfStack赋值给stackPtr，并将 topOfStack 修改为NULL
         OsRecycleTaskResources(taskCB, &stackPtr); 
         LOS_IntRestore(intSave);
-
+        // 真正释放栈空间
         (VOID)LOS_MemFree(OS_TASK_STACK_ADDR, (VOID *)stackPtr);
         intSave = LOS_IntLock();
     }
     LOS_IntRestore(intSave);
 }
 
+/**
+ * @brief 设置PmEnter指向的函数，如果参数非空
+ * 
+ * @param func 
+ * @return UINT32 
+ */
 UINT32 OsPmEnterHandlerSet(VOID (*func)(VOID))
 {
     if (func == NULL) {
@@ -193,7 +214,7 @@ UINT32 OsPmEnterHandlerSet(VOID (*func)(VOID))
 
 /*****************************************************************************
  Function    : OsIdleTask
- Description : Idle task.
+ Description : Idle task. 运行在最低优先级（31）上
  Input       : None
  Output      : None
  Return      : None
@@ -201,8 +222,10 @@ UINT32 OsPmEnterHandlerSet(VOID (*func)(VOID))
 LITE_OS_SEC_TEXT VOID OsIdleTask(VOID)
 {
     while (1) {
+        // 回收执行完毕的task
         OsRecyleFinishedTask();
-
+        
+        // 如果PmEnter非空，则执行PmEnter，否则sleep
         if (PmEnter != NULL) {
             PmEnter();
         } else {
@@ -325,7 +348,7 @@ LITE_OS_SEC_TEXT_MINOR VOID OsPrintAllTskInfoHeader(VOID)
 
 /*****************************************************************************
  Function    : OsGetAllTskInfo
- Description : Get all task info.
+ Description : Get all task info. 打印全部task的信息
  Input       : None
  Output      : None
  Return      : None
@@ -646,7 +669,7 @@ LITE_OS_SEC_TEXT_MINOR VOID OsTaskMonInit(VOID)
 
 /*****************************************************************************
  Function    : OsTaskEntry
- Description : All task entry
+ Description : All task entry，所有任务都会由此函数进入，首先执行task函数，执行完毕后删除该任务（相当于给task函数做了一层封装）
  Input       : taskID     --- The ID of the task to be run
  Output      : None
  Return      : None
@@ -656,7 +679,9 @@ LITE_OS_SEC_TEXT_INIT VOID OsTaskEntry(UINT32 taskID)
     UINT32 retVal;
     LosTaskCB *taskCB = OS_TCB_FROM_TID(taskID);
 
+    // 执行task的函数
     taskCB->joinRetval = (UINTPTR)taskCB->taskEntry(taskCB->arg);
+    // task函数执行完毕后，task会被删除
     retVal = LOS_TaskDelete(taskCB->taskID);
     if (retVal != LOS_OK) {
         PRINT_ERR("Delete Task[TID: %d] Failed!\n", taskCB->taskID);
@@ -894,19 +919,25 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskResume(UINT32 taskID)
         return LOS_ERRNO_TSK_ID_INVALID;
     }
 
+    // 根据taskID 从task数组中获取 taskCB
     taskCB = OS_TCB_FROM_TID(taskID);
     intSave = LOS_IntLock();
     tempStatus = taskCB->taskStatus;
 
+    // 如果 status 是 OS_TASK_STATUS_UNUSED 证明该 taskCB 还没有被使用，task未被创建
     if (tempStatus & OS_TASK_STATUS_UNUSED) {
         retErr = LOS_ERRNO_TSK_NOT_CREATED;
+        // goto LOS_ERREND
         OS_GOTO_ERREND();
     } else if (!(tempStatus & OS_TASK_STATUS_SUSPEND)) {
+        // status 必须是 SUSPEND 才能继续下面的 Resume ，resume 对其他状态没有意义
         retErr = LOS_ERRNO_TSK_NOT_SUSPENDED;
         OS_GOTO_ERREND();
     }
 
+    // 取消task 的suspend状态，如果状态不是DELAY 或 pend，把task加入优先级队列中
     needSched = OsSchedResume(taskCB);
+    // 需要调度，且系统开启了调度，进行调度
     if (needSched && g_taskScheduled) {
         LOS_IntRestore(intSave);
         LOS_Schedule();
@@ -935,15 +966,21 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskSuspend(UINT32 taskID)
     UINT16 tempStatus;
     UINT32 retErr;
 
+    // 判断taskid是否合法
     retErr = OsCheckTaskIDValid(taskID);
     if (retErr != LOS_OK) {
         return retErr;
     }
-
+    // 根据taskID 从task 数组中获取task
     taskCB = OS_TCB_FROM_TID(taskID);
     intSave = LOS_IntLock();
     tempStatus = taskCB->taskStatus;
 
+    // 检查task status，
+    // UNUSED 的task未被使用
+    // SYSTEM_TASK 不允许进入suspend状态
+    // 本来就是 suspend 状态的不能再次进入
+    // 处于running状态且g_losTaskLock != 0
     if (tempStatus & OS_TASK_STATUS_UNUSED) {
         retErr = LOS_ERRNO_TSK_NOT_CREATED;
         OS_GOTO_ERREND();
@@ -964,8 +1001,10 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskSuspend(UINT32 taskID)
         OS_GOTO_ERREND();
     }
 
+    // 从优先级队列中删除task，设置status为suspend
     OsSchedSuspend(taskCB);
 
+    // 如果当前taskid是系统正在运行的taskID，需要调度
     if (taskID == g_losTask.runTask->taskID) {
         LOS_IntRestore(intSave);
         LOS_Schedule();
@@ -980,11 +1019,18 @@ LOS_ERREND:
     return retErr;
 }
 
+/**
+ * @brief 如果joinList非空，取出joinlist第一个元素，并wake该元素
+ * 
+ * @param taskCB 
+ * @return STATIC 
+ */
 STATIC VOID OsTaskJoinPostUnsafe(LosTaskCB *taskCB)
 {
     LosTaskCB *resumedTask = NULL;
 
     if (taskCB->taskStatus & OS_TASK_FLAG_JOINABLE) {
+        // 如果joinList非空，取出joinlist第一个元素，并wake
         if (!LOS_ListEmpty(&taskCB->joinList)) {
             resumedTask = OS_TCB_FROM_PENDLIST(LOS_DL_LIST_FIRST(&(taskCB->joinList)));
             OsSchedTaskWake(resumedTask);
@@ -998,6 +1044,7 @@ STATIC UINT32 OsTaskJoinPendUnsafe(LosTaskCB *taskCB)
     if (taskCB->taskStatus & OS_TASK_STATUS_EXIT) {
         return LOS_OK;
     } else if ((taskCB->taskStatus & OS_TASK_FLAG_JOINABLE) && LOS_ListEmpty(&taskCB->joinList)) {
+        // 把g_losTask.runTask 加入task的joinList
         OsSchedTaskWait(&taskCB->joinList, LOS_WAIT_FOREVER);
         return LOS_OK;
     }
@@ -1005,9 +1052,16 @@ STATIC UINT32 OsTaskJoinPendUnsafe(LosTaskCB *taskCB)
     return LOS_NOK;
 }
 
+/**
+ * @brief 尝试删除task的joinlist并设置状态为不可join
+ * 
+ * @param taskCB 
+ * @return LOS_OK 成功，
+ */
 STATIC UINT32 OsTaskSetDetachUnsafe(LosTaskCB *taskCB)
 {
     if (taskCB->taskStatus & OS_TASK_FLAG_JOINABLE) {
+        // 如果joinList为空，则删除joinList
         if (LOS_ListEmpty(&(taskCB->joinList))) {
             LOS_ListDelete(&(taskCB->joinList));
             taskCB->taskStatus &= ~OS_TASK_FLAG_JOINABLE;
@@ -1040,6 +1094,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskJoin(UINT32 taskID, UINTPTR *retval)
         return LOS_ERRNO_TSK_SCHED_LOCKED;
     }
 
+    // 如果当前taskid与传入的taskid相同，返回，即自己不能等待自己
     if (taskID == LOS_CurTaskIDGet()) {
         return LOS_ERRNO_TSK_NOT_JOIN_SELF;
     }
@@ -1051,6 +1106,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskJoin(UINT32 taskID, UINTPTR *retval)
         return LOS_ERRNO_TSK_NOT_CREATED;
     }
 
+    // 把当前task加入taskCB的joinlist
     ret = OsTaskJoinPendUnsafe(taskCB);
     LOS_IntRestore(intSave);
     if (ret == LOS_OK) {
@@ -1062,6 +1118,8 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskJoin(UINT32 taskID, UINTPTR *retval)
 
         intSave = LOS_IntLock();
         taskCB->taskStatus &= ~OS_TASK_STATUS_EXIT;
+
+        // 释放taskCB的栈空间，TODO...
         OsRecycleTaskResources(taskCB, &stackPtr);
         LOS_IntRestore(intSave);
         (VOID)LOS_MemFree(OS_TASK_STACK_ADDR, (VOID *)stackPtr);
@@ -1071,6 +1129,12 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskJoin(UINT32 taskID, UINTPTR *retval)
     return ret;
 }
 
+/**
+ * @brief 尝试删除task的joinlist并设置状态为不可join
+ * 
+ * @param taskID 
+ * @return LITE_OS_SEC_TEXT_INIT 
+ */
 LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskDetach(UINT32 taskID)
 {
     UINT32 intSave;
@@ -1098,11 +1162,13 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskDetach(UINT32 taskID)
         return LOS_TaskJoin(taskID, NULL);
     }
 
+    // 尝试删除task的joinlist并设置状态为不可join
     ret = OsTaskSetDetachUnsafe(taskCB);
     LOS_IntRestore(intSave);
     return ret;
 }
 
+// TODO 不明白
 LITE_OS_SEC_TEXT_INIT STATIC_INLINE VOID OsRunningTaskDelete(UINT32 taskID, LosTaskCB *taskCB)
 {
     LOS_ListTailInsert(&g_taskRecycleList, &taskCB->pendList);
@@ -1132,6 +1198,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskDelete(UINT32 taskID)
 
     taskCB = OS_TCB_FROM_TID(taskID);
     intSave = LOS_IntLock();
+    // 系统任务不可删除
     if (taskCB->taskStatus & OS_TASK_FLAG_SYSTEM_TASK) {
         LOS_IntRestore(intSave);
         return LOS_ERRNO_TSK_OPERATE_SYSTEM_TASK;
@@ -1160,6 +1227,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskDelete(UINT32 taskID)
 
     OsHookCall(LOS_HOOK_TYPE_TASK_DELETE, taskCB);
     OsSchedTaskExit(taskCB);
+    // 如果joinList非空，取出joinlist第一个元素，并wake该元素
     OsTaskJoinPostUnsafe(taskCB);
 
     LOS_EventDestroy(&(taskCB->event));
@@ -1215,11 +1283,13 @@ LITE_OS_SEC_TEXT UINT32 LOS_TaskDelay(UINT32 tick)
         return LOS_ERRNO_TSK_DELAY_IN_LOCK;
     }
 
+    // 系统任务不允许delay
     if (g_losTask.runTask->taskStatus & OS_TASK_FLAG_SYSTEM_TASK) {
         return LOS_ERRNO_TSK_OPERATE_SYSTEM_TASK;
     }
     OsHookCall(LOS_HOOK_TYPE_TASK_DELAY, tick);
     if (tick == 0) {
+        // 如果tick==0,则只是让出CPU
         return LOS_TaskYield();
     } else {
         intSave = LOS_IntLock();
@@ -1232,6 +1302,12 @@ LITE_OS_SEC_TEXT UINT32 LOS_TaskDelay(UINT32 tick)
     return LOS_OK;
 }
 
+/**
+ * @brief 获取task优先级
+ * 
+ * @param taskID 
+ * @return LITE_OS_SEC_TEXT_MINOR 
+ */
 LITE_OS_SEC_TEXT_MINOR UINT16 LOS_TaskPriGet(UINT32 taskID)
 {
     UINT32 intSave;
@@ -1291,6 +1367,7 @@ LITE_OS_SEC_TEXT_MINOR UINT32 LOS_TaskPriSet(UINT32 taskID, UINT16 taskPrio)
         return LOS_ERRNO_TSK_OPERATE_SYSTEM_TASK;
     }
 
+    // 设置task优先级，如果task状态是READY或RUNNING，返回TRUE
     isReady = OsSchedModifyTaskSchedParam(taskCB, taskPrio);
     LOS_IntRestore(intSave);
     /* delete the task and insert with right priority into ready queue */
@@ -1318,6 +1395,7 @@ LITE_OS_SEC_TEXT_MINOR UINT32 LOS_TaskYield(VOID)
     UINT32 intSave;
 
     intSave = LOS_IntLock();
+    // 设置当前运行task时间片为0
     OsSchedYield();
     LOS_IntRestore(intSave);
     LOS_Schedule();
@@ -1364,6 +1442,13 @@ LITE_OS_SEC_TEXT_MINOR VOID LOS_TaskUnlock(VOID)
     LOS_IntRestore(intSave);
 }
 
+/**
+ * @brief 根据taskid 获取task的信息
+ * 
+ * @param taskID 
+ * @param taskInfo 
+ * @return LITE_OS_SEC_TEXT_MINOR 
+ */
 LITE_OS_SEC_TEXT_MINOR UINT32 LOS_TaskInfoGet(UINT32 taskID, TSK_INFO_S *taskInfo)
 {
     UINT32 intSave;
@@ -1377,6 +1462,7 @@ LITE_OS_SEC_TEXT_MINOR UINT32 LOS_TaskInfoGet(UINT32 taskID, TSK_INFO_S *taskInf
         return LOS_ERRNO_TSK_ID_INVALID;
     }
 
+    // 根据taskid 从task数组中获取task
     taskCB = OS_TCB_FROM_TID(taskID);
     intSave = LOS_IntLock();
 
@@ -1413,6 +1499,13 @@ LITE_OS_SEC_TEXT_MINOR UINT32 LOS_TaskInfoGet(UINT32 taskID, TSK_INFO_S *taskInf
     return LOS_OK;
 }
 
+/**
+ * @brief 根据taskid获取 task status
+ * 
+ * @param taskID 
+ * @param taskStatus 
+ * @return LITE_OS_SEC_TEXT_MINOR 
+ */
 LITE_OS_SEC_TEXT_MINOR UINT32 LOS_TaskStatusGet(UINT32 taskID, UINT32 *taskStatus)
 {
     UINT32    intSave;
@@ -1472,7 +1565,7 @@ LITE_OS_SEC_TEXT_MINOR UINT32 LOS_TaskSwitchInfoGet(UINT32 index, UINT32 *taskSw
 
 /*****************************************************************************
 Function    : LOS_TaskInfoMonitor
-Description : Get all task info
+Description : Get all task info，并打印
 Input       : None
 Return      : LOS_OK on success ,or OS_ERROR on failure
 *****************************************************************************/

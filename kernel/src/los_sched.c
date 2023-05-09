@@ -67,6 +67,12 @@ STATIC UINT32 g_schedResponseID = 0;
 STATIC UINT16 g_tickIntLock = 0;
 STATIC UINT64 g_schedResponseTime = OS_SCHED_MAX_RESPONSE_TIME;
 
+/**
+ * @brief 重置g_schedResponseTime ，如果responseTime <= g_schedResponseTime
+ * 
+ * @param responseTime 
+ * @return VOID 
+ */
 VOID OsSchedResetSchedResponseTime(UINT64 responseTime)
 {
     if (responseTime <= g_schedResponseTime) {
@@ -74,7 +80,7 @@ VOID OsSchedResetSchedResponseTime(UINT64 responseTime)
     }
 }
 
-/// @brief 更新taskCB->timeSlice -= incTime，更新taskCB->startTime = currTime
+/// @brief 更新时间片taskCB->timeSlice -= incTime，更新taskCB->startTime = currTime
 /// @param taskCB 
 /// @param currTime 
 /// @return 
@@ -289,6 +295,11 @@ VOID OsSchedTaskExit(LosTaskCB *taskCB)
     }
 }
 
+/**
+ * @brief 设置当前task g_losTask.runTask 时间片为0
+ * 
+ * @return VOID 
+ */
 VOID OsSchedYield(VOID)
 {
     LosTaskCB *runTask = g_losTask.runTask;
@@ -296,6 +307,13 @@ VOID OsSchedYield(VOID)
     runTask->timeSlice = 0;
 }
 
+/**
+ * @brief 设置状态为DELAY，设置等待时间
+ * 
+ * @param runTask 
+ * @param tick 
+ * @return VOID 
+ */
 VOID OsSchedDelay(LosTaskCB *runTask, UINT32 tick)
 {
     runTask->taskStatus |= OS_TASK_STATUS_DELAY;
@@ -309,18 +327,27 @@ VOID OsSchedTaskWait(LOS_DL_LIST *list, UINT32 ticks)
     runTask->taskStatus |= OS_TASK_STATUS_PEND;
     LOS_ListTailInsert(list, &runTask->pendList);
 
+    // ticks != LOS_WAIT_FOREVER, ticks有效，设置runtask的waittimes
     if (ticks != LOS_WAIT_FOREVER) {
         runTask->taskStatus |= OS_TASK_STATUS_PEND_TIME;
         runTask->waitTimes = ticks;
     }
 }
 
+/**
+ * @brief 取消PEND标志，将resumed的task加入优先级队列中--唤醒一个task
+ * 
+ * @param resumedTask 
+ * @return VOID 
+ */
 VOID OsSchedTaskWake(LosTaskCB *resumedTask)
 {
     LOS_ListDelete(&resumedTask->pendList);
+    // 取消 PEND 状态
     resumedTask->taskStatus &= ~OS_TASK_STATUS_PEND;
 
     if (resumedTask->taskStatus & OS_TASK_STATUS_PEND_TIME) {
+        // 如果状态是PEND_TIME，需要将节点从sortlist中删除并取消该状态
         OsDeleteSortLink(&resumedTask->sortList);
         resumedTask->taskStatus &= ~OS_TASK_STATUS_PEND_TIME;
     }
@@ -331,11 +358,20 @@ VOID OsSchedTaskWake(LosTaskCB *resumedTask)
     }
 }
 
+/**
+ * @brief 设置task->sortList->responseTime，设置status为FREEZE
+ * 
+ * @param taskCB 
+ * @return STATIC 
+ */
 STATIC VOID OsSchedFreezeTask(LosTaskCB *taskCB)
 {
+    // 获取 responseTime
     UINT64 responseTime = GET_SORTLIST_VALUE(&taskCB->sortList);
+    // 从sortlist删除task
     OsDeleteSortLink(&taskCB->sortList);
     SET_SORTLIST_VALUE(&taskCB->sortList, responseTime);
+    // 设置task status
     taskCB->taskStatus |= OS_TASK_FLAG_FREEZE;
     return;
 }
@@ -362,31 +398,49 @@ STATIC VOID OsSchedUnfreezeTask(LosTaskCB *taskCB)
     return;
 }
 
+/**
+ * @brief 从优先级队列中删除task，设置status为suspend
+ * 
+ * @param taskCB 
+ * @return VOID 
+ */
 VOID OsSchedSuspend(LosTaskCB *taskCB)
 {
     BOOL isPmMode = FALSE;
     if (taskCB->taskStatus & OS_TASK_STATUS_READY) {
+        // 从优先级队列中删除该任务
         OsSchedTaskDeQueue(taskCB);
     }
 
 #if (LOSCFG_KERNEL_PM == 1)
     isPmMode = OsIsPmMode();
 #endif
+    // 如果 status 是 pend_time 或 DELAY
     if ((taskCB->taskStatus & (OS_TASK_STATUS_PEND_TIME | OS_TASK_STATUS_DELAY)) && isPmMode) {
+        // 设置task->sortList->responseTime，设置status为FREEZE
         OsSchedFreezeTask(taskCB);
     }
 
+    // 设置status为suspend
     taskCB->taskStatus |= OS_TASK_STATUS_SUSPEND;
     OsHookCall(LOS_HOOK_TYPE_MOVEDTASKTOSUSPENDEDLIST, taskCB);
 }
 
+/**
+ * @brief 取消task 的suspend状态，如果状态不是DELAY 或 pend，把task加入优先级队列中
+ * 
+ * @param taskCB 
+ * @return BOOL 
+ */
 BOOL OsSchedResume(LosTaskCB *taskCB)
 {
     if (taskCB->taskStatus & OS_TASK_FLAG_FREEZE) {
         OsSchedUnfreezeTask(taskCB);
     }
-
+    
+    // 取消suspend状态
     taskCB->taskStatus &= (~OS_TASK_STATUS_SUSPEND);
+    // 如果状态不是DELAY 或 pend，把task加入优先级队列中, 返回TRUE
     if (!(taskCB->taskStatus & (OS_TASK_STATUS_DELAY | OS_TASK_STATUS_PEND))) {
         OsSchedTaskEnQueue(taskCB);
         return TRUE;
@@ -395,6 +449,13 @@ BOOL OsSchedResume(LosTaskCB *taskCB)
     return FALSE;
 }
 
+/**
+ * @brief 设置task优先级，如果task状态是READY或RUNNING，返回TRUE
+ * 
+ * @param taskCB 
+ * @param priority 
+ * @return BOOL 
+ */
 BOOL OsSchedModifyTaskSchedParam(LosTaskCB *taskCB, UINT16 priority)
 {
     if (taskCB->taskStatus & OS_TASK_STATUS_READY) {
@@ -481,6 +542,7 @@ LosTaskCB *OsGetTopTask(VOID)
     UINT32 priority;
     LosTaskCB *newTask = NULL;
     if (g_queueBitmap) {
+        // CLZ 统计最高位0的个数
         priority = CLZ(g_queueBitmap);
         newTask = LOS_DL_LIST_ENTRY(((LOS_DL_LIST *)&g_priQueueList[priority])->pstNext, LosTaskCB, pendList);
     } else {
@@ -516,16 +578,21 @@ VOID OsSchedStart(VOID)
     OsSchedSetNextExpireTime(newTask->taskID, newTask->startTime + newTask->timeSlice);
 }
 
+/**
+ * @brief 
+ * 
+ * @return BOOL 
+ */
 BOOL OsSchedTaskSwitch(VOID)
 {
     UINT64 endTime;
     BOOL isTaskSwitch = FALSE;
     LosTaskCB *runTask = g_losTask.runTask;
-    // 更新taskCB->timeSlice -= incTime，更新taskCB->startTime = currTime
+    // 更新runtask的时间片
     OsTimeSliceUpdate(runTask, OsGetCurrSchedTimeCycle());
 
     if (runTask->taskStatus & (OS_TASK_STATUS_PEND_TIME | OS_TASK_STATUS_DELAY)) {
-        // 按task responseTime大小顺序插入有序链表，head->next 是最小的
+        // 按task responseTime大小顺序插入g_taskSortLink有序链表，head->next 是最小的
         OsAdd2SortLink(&runTask->sortList, runTask->startTime, runTask->waitTimes, OS_SORT_LINK_TASK);
     } else if (!(runTask->taskStatus & OS_TASK_BLOCKED_STATUS)) { // 非阻塞状态
         // 将任务加入优先级队列中，如果时间片大于最小时间片，插入头部，否则插入尾部
