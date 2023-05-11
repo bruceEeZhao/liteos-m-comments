@@ -154,6 +154,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_KernelInit(VOID)
         return ret;
     }
 
+    // 中断初始化
     ArchInit();
 
     ret = OsTickTimerInit();
@@ -162,6 +163,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_KernelInit(VOID)
         return ret;
     }
 
+    // task相关结构初始化
     ret = OsTaskInit();
     if (ret != LOS_OK) {
         PRINT_ERR("OsTaskInit error\n");
@@ -203,13 +205,14 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_KernelInit(VOID)
 #endif
 
 #if (LOSCFG_BASE_CORE_SWTMR == 1)
+    // 创建软件timer task
     ret = OsSwtmrInit();
     if (ret != LOS_OK) {
         PRINT_ERR("OsSwtmrInit error\n");
         return ret;
     }
 #endif
-
+    // 创建Idle task
     ret = OsIdleTaskCreate();
     if (ret != LOS_OK) {
         return ret;

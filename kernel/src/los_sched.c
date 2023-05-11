@@ -99,10 +99,11 @@ STATIC INLINE VOID OsSchedSetNextExpireTime(UINT32 responseID, UINT64 taskEndTim
 {
     UINT64 nextResponseTime;
     BOOL isTimeSlice = FALSE;
-
+    // 获取当前时间
     UINT64 currTime = OsGetCurrSchedTimeCycle();
     UINT64 nextExpireTime = OsGetNextExpireTime(currTime, OS_TICK_RESPONSE_PRECISION);
     /* The response time of the task time slice is aligned to the next response time in the delay queue */
+    // 如果下一个过期时间大于结束时间且 下一个过期时间 - 结束时间大于最小调度间隔，则设置过期时间为结束时间
     if ((nextExpireTime > taskEndTime) && ((nextExpireTime - taskEndTime) > OS_SCHED_MINI_PERIOD)) {
         nextExpireTime = taskEndTime;
         isTimeSlice = TRUE;
@@ -188,18 +189,28 @@ STATIC INLINE VOID OsSchedPriQueueDelete(LOS_DL_LIST *priqueueItem, UINT32 prior
     }
 }
 
+/**
+ * @brief 唤醒超时等待的task，将task从之前的等待链表中删除，可能是事件、信号等待链表等，如果状态不是SUSPEND，加入就绪队列
+ * 
+ * @param taskCB 
+ * @param needSchedule 
+ * @return VOID 
+ */
 STATIC INLINE VOID OsSchedWakePendTimeTask(LosTaskCB *taskCB, BOOL *needSchedule)
 {
     UINT16 tempStatus = taskCB->taskStatus;
+    // 如果状态是PEND或DELAY，取消task的PEND，PEND_TIME,DELAY状态
     if (tempStatus & (OS_TASK_STATUS_PEND | OS_TASK_STATUS_DELAY)) {
         taskCB->taskStatus &= ~(OS_TASK_STATUS_PEND | OS_TASK_STATUS_PEND_TIME | OS_TASK_STATUS_DELAY);
         if (tempStatus & OS_TASK_STATUS_PEND) {
             taskCB->taskStatus |= OS_TASK_STATUS_TIMEOUT;
+            // 将task从之前的等待链表中删除，可能是事件、信号等待链表等
             LOS_ListDelete(&taskCB->pendList);
             taskCB->taskMux = NULL;
             taskCB->taskSem = NULL;
         }
 
+        // 如果状态不是SUSPEND，加入就绪队列
         if (!(tempStatus & OS_TASK_STATUS_SUSPEND)) {
             OsSchedTaskEnQueue(taskCB);
             *needSchedule = TRUE;
@@ -207,6 +218,12 @@ STATIC INLINE VOID OsSchedWakePendTimeTask(LosTaskCB *taskCB, BOOL *needSchedule
     }
 }
 
+/**
+ * @brief 每次时钟中断，都会检查sortlist，把其中超时的任务从链表中删除，并加入到就绪队列
+ * 
+ * @return false: 不需要调度
+ *         true： 需要调度
+ */
 STATIC INLINE BOOL OsSchedScanTimerList(VOID)
 {
     BOOL needSchedule = FALSE;
@@ -226,6 +243,7 @@ STATIC INLINE BOOL OsSchedScanTimerList(VOID)
 
     SortLinkList *sortList = LOS_DL_LIST_ENTRY(listObject->pstNext, SortLinkList, sortLinkNode);
     UINT64 currTime = OsGetCurrSchedTimeCycle();
+    // 遍历链表直到sortList->responseTime > 当前时间，从sortlist中删除，并添加到就绪队列中
     while (sortList->responseTime <= currTime) {
         LosTaskCB *taskCB = LOS_DL_LIST_ENTRY(sortList, LosTaskCB, sortList);
         OsDeleteNodeSortLink(&taskCB->sortList);
@@ -240,9 +258,9 @@ STATIC INLINE BOOL OsSchedScanTimerList(VOID)
     return needSchedule;
 }
 
-/// @brief 将任务加入优先级队列中，如果时间片大于最小时间片，插入头部，否则插入尾部
+/// @brief 将任务加入优先级队列中，如果时间片大于最小时间片，插入头部，否则（时间片用完）插入尾部，保证同级别的其他任务可以执行
 /// @param taskCB 
-/// @return 
+/// @return VOID
 VOID OsSchedTaskEnQueue(LosTaskCB *taskCB)
 {   
     // 断言：task状态应该是非ready
@@ -252,7 +270,7 @@ VOID OsSchedTaskEnQueue(LosTaskCB *taskCB)
         if (taskCB->timeSlice > OS_TIME_SLICE_MIN) {
             // 如果时间片大于最小时间片，则把task加入优先级为priority的队列中。
             OsSchedPriQueueEnHead(&taskCB->pendList, taskCB->priority);
-        } else {
+        } else { // 时间片用完
             taskCB->timeSlice = OS_SCHED_TIME_SLICES;
             OsSchedPriQueueEnTail(&taskCB->pendList, taskCB->priority);
         }
@@ -510,21 +528,22 @@ UINT64 OsSchedGetNextExpireTime(UINT64 startTime)
 UINT32 OsSchedInit(VOID)
 {
     UINT16 pri;
-    // 初始化每一个双向链表，前向后向指针均指向本身
+    // 初始化每一个优先级队列双向链表，前向后向指针均指向本身
     for (pri = 0; pri < OS_PRIORITY_QUEUE_NUM; pri++) {
         LOS_ListInit(&g_priQueueList[pri]);
     }
+    // 某一位为1表示该下标优先级队列有任务
     g_queueBitmap = 0;
 
-    // g_taskSortLinkList 中只有一个成员 LOS_DL_LIST sortLink;
+    // g_taskSortLinkList = g_taskSortLink
     g_taskSortLinkList = OsGetSortLinkAttribute(OS_SORT_LINK_TASK);
     if (g_taskSortLinkList == NULL) {
         return LOS_NOK;
     }
 
-    // 初始化成员 sortLink
+    // 初始化成员 sortLink， g_taskSortLinkList 中只有一个成员 LOS_DL_LIST sortLink;
     OsSortLinkInit(g_taskSortLinkList);
-    // 设置 g_schedResponseTime 为 ((UINT64)-1)
+    // 初始化调度响应时间为最大值，设置 g_schedResponseTime 为 ((UINT64)-1)
     g_schedResponseTime = OS_SCHED_MAX_RESPONSE_TIME;
 
     return LOS_OK;
@@ -557,13 +576,18 @@ VOID OsSchedStart(VOID)
     PRINTK("Entering scheduler\n");
 
     (VOID)LOS_IntLock();
+    // 获取就绪队列中优先级最高的任务
     LosTaskCB *newTask = OsGetTopTask();
 
+    // 设置为运行状态
     newTask->taskStatus |= OS_TASK_STATUS_RUNNING;
+    // newtask和runtask均设置为 newtask
     g_losTask.newTask = newTask;
     g_losTask.runTask = g_losTask.newTask;
 
+    // 设置开始运行时间
     newTask->startTime = OsGetCurrSchedTimeCycle();
+    // 从就绪队列中删除
     OsSchedTaskDeQueue(newTask);
 
     OsTickSysTimerStartTimeSet(newTask->startTime);
@@ -575,31 +599,36 @@ VOID OsSchedStart(VOID)
 
     g_schedResponseTime = OS_SCHED_MAX_RESPONSE_TIME;
     g_schedResponseID = OS_INVALID;
+    // 设置task过期时间
     OsSchedSetNextExpireTime(newTask->taskID, newTask->startTime + newTask->timeSlice);
 }
 
 /**
- * @brief 
+ * @brief 判断是否需要进行task switch，首先把runtask插入就绪队列（如果不处于PEND_TIME,DELAY,BLOCK状态），
+ *        然后选择最高优先级的任务作为newtask，如果runtask和newtask相同则不需要切换，否则，切换，
+ *        这种切换逻辑保证了最高优先级的任务会优先执行
  * 
- * @return BOOL 
+ * @return true： 需要switch
+ *         false: 不需要switch
  */
 BOOL OsSchedTaskSwitch(VOID)
 {
     UINT64 endTime;
     BOOL isTaskSwitch = FALSE;
     LosTaskCB *runTask = g_losTask.runTask;
-    // 更新runtask的时间片
+    // 更新runtask的时间片，减去运行的时间片，开始时间设置为当前时间
     OsTimeSliceUpdate(runTask, OsGetCurrSchedTimeCycle());
 
+    // 如果任务处于pend_time或delay状态
     if (runTask->taskStatus & (OS_TASK_STATUS_PEND_TIME | OS_TASK_STATUS_DELAY)) {
         // 按task responseTime大小顺序插入g_taskSortLink有序链表，head->next 是最小的
         OsAdd2SortLink(&runTask->sortList, runTask->startTime, runTask->waitTimes, OS_SORT_LINK_TASK);
-    } else if (!(runTask->taskStatus & OS_TASK_BLOCKED_STATUS)) { // 非阻塞状态
+    } else if (!(runTask->taskStatus & OS_TASK_BLOCKED_STATUS)) { // 阻塞状态的任务不加入就绪队列
         // 将任务加入优先级队列中，如果时间片大于最小时间片，插入头部，否则插入尾部
         OsSchedTaskEnQueue(runTask);
     }
 
-    // 获取一个task
+    // 从就绪队列获取一个优先级最高的task
     LosTaskCB *newTask = OsGetTopTask();
     g_losTask.newTask = newTask;
 
@@ -612,7 +641,7 @@ BOOL OsSchedTaskSwitch(VOID)
 #endif
         runTask->taskStatus &= ~OS_TASK_STATUS_RUNNING;
         newTask->taskStatus |= OS_TASK_STATUS_RUNNING;
-        newTask->startTime = runTask->startTime;   // 为什么starttime相同？TODO
+        newTask->startTime = runTask->startTime;   // 新任务的开始时间设置为runtask的开始时间，在599行更新过
         isTaskSwitch = TRUE;
 
         OsHookCall(LOS_HOOK_TYPE_TASK_SWITCHEDIN);
@@ -621,15 +650,18 @@ BOOL OsSchedTaskSwitch(VOID)
     // 如果newTask是就绪态，则将该任务从优先级队列删除，并取消就绪态
     OsSchedTaskDeQueue(newTask);
 
+    // 计算newtask的运行结束时间，开始时间+时间片大小
     if (newTask->taskID != g_idleTaskID) {
         endTime = newTask->startTime + newTask->timeSlice;
     } else {
         endTime = OS_SCHED_MAX_RESPONSE_TIME - OS_TICK_RESPONSE_PRECISION;
     }
 
+    // 如果g_schedResponseID == runTask->taskID，设置g_schedResponseTime为最大值
     if (g_schedResponseID == runTask->taskID) {
         g_schedResponseTime = OS_SCHED_MAX_RESPONSE_TIME;
     }
+    // 设置newtask过期时间
     OsSchedSetNextExpireTime(newTask->taskID, endTime);
 
     return isTaskSwitch;
@@ -673,6 +705,7 @@ VOID LOS_SchedTickHandler(VOID)
         g_tickIntLock--;
     }
 
+    // 更新runtask的时间片
     OsTimeSliceUpdate(g_losTask.runTask, tickStartTime);
     g_losTask.runTask->startTime = OsGetCurrSchedTimeCycle();
 

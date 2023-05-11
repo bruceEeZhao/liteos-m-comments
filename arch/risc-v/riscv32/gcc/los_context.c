@@ -55,6 +55,7 @@ VOID ArchTaskSchedule(VOID)
 {
     UINT32 intSave;
 
+    // if g_intCount > 0
     if (OS_INT_ACTIVE) {
         g_sysNeedSched = TRUE;
         return;
@@ -62,6 +63,7 @@ VOID ArchTaskSchedule(VOID)
 
     intSave = LOS_IntLock();
     g_sysNeedSched = FALSE;
+    // 判断是否需要进行task switch
     BOOL isSwitch = OsSchedTaskSwitch();
     if (isSwitch) {
         HalTaskContextSwitch(intSave);

@@ -41,8 +41,9 @@
 .extern  __irq_stack_top
 .section .interrupt.text
 
+# 寄存器的值压栈
 .macro PUSH_ALL_REG
-    addi sp, sp, -(32 * REGBYTES)
+    addi sp, sp, -(32 * REGBYTES) # 申请32个寄存器空间大小的栈空间
     SREG  t6, 2 * REGBYTES(sp)
     SREG  t5, 3 * REGBYTES(sp)
     SREG  t4, 4 * REGBYTES(sp)
@@ -108,13 +109,13 @@
 HalTaskContextSwitch:
     PUSH_ALL_REG
 
-    // clear mpie
+    // clear mpie， 为1 中断打开， 为0,中断关闭
     li   a2, RISCV_MSTATUS_MPIE
     not  a2, a2
     and  a0, a0, a2
 
     // get mie
-    andi a1, a0, RISCV_MSTATUS_MIE
+    andi a1, a0, RISCV_MSTATUS_MIE  # a1 = mie + a0
 
     // must be in machine mode
     ori  a1, a1, 0x180
