@@ -687,8 +687,14 @@ UINT64 LOS_SchedTickTimeoutNsGet(VOID)
     return OS_SYS_CYCLE_TO_NS(responseTime, g_sysClock);
 }
 
+/**
+ * @brief 时钟中断处理函数
+ * 
+ * @return VOID 
+ */
 VOID LOS_SchedTickHandler(VOID)
-{
+{   
+    // 如果g_taskScheduled = Fasle，返回
     if (!g_taskScheduled) {
         return;
     }
@@ -700,7 +706,7 @@ VOID LOS_SchedTickHandler(VOID)
         if (g_swtmrScan != NULL) {
             (VOID)g_swtmrScan();
         }
-
+        // 检查sortlist，处理超时的任务
         (VOID)OsSchedScanTimerList();
         g_tickIntLock--;
     }

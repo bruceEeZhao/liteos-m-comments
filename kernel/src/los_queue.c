@@ -63,14 +63,17 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsQueueInit(VOID)
         return LOS_ERRNO_QUEUE_MAXNUM_ZERO;
     }
 
+    // 初始化队列，共有6个队列
     g_allQueue = (LosQueueCB *)LOS_MemAlloc(m_aucSysMem0, LOSCFG_BASE_IPC_QUEUE_LIMIT * sizeof(LosQueueCB));
     if (g_allQueue == NULL) {
         return LOS_ERRNO_QUEUE_NO_MEMORY;
     }
 
+    // 初始化为0值
     (VOID)memset_s(g_allQueue, LOSCFG_BASE_IPC_QUEUE_LIMIT * sizeof(LosQueueCB),
                    0, LOSCFG_BASE_IPC_QUEUE_LIMIT * sizeof(LosQueueCB));
 
+    // 使用g_freeQueueList作为头结点管理所有队列，index为[0:5]
     LOS_ListInit(&g_freeQueueList);
     for (index = 0; index < LOSCFG_BASE_IPC_QUEUE_LIMIT; index++) {
         queueNode = ((LosQueueCB *)g_allQueue) + index;
@@ -130,12 +133,14 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_QueueCreate(const CHAR *queueName,
     }
 
     intSave = LOS_IntLock();
+    // 如果没有可用的QueueCB,释放内存，返回错误
     if (LOS_ListEmpty(&g_freeQueueList)) {
         LOS_IntRestore(intSave);
         (VOID)LOS_MemFree(m_aucSysMem0, queue);
         return LOS_ERRNO_QUEUE_CB_UNAVAILABLE;
     }
 
+    // 从g_freeQueueList取出元素，对queueCB进行初始化，queueCB管理3个链表
     unusedQueue = LOS_DL_LIST_FIRST(&(g_freeQueueList));
     LOS_ListDelete(unusedQueue);
     queueCB = (GET_QUEUE_LIST(unusedQueue));
@@ -143,12 +148,12 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_QueueCreate(const CHAR *queueName,
     queueCB->queueSize = msgSize;
     queueCB->queue = queue;
     queueCB->queueState = OS_QUEUE_INUSED;
-    queueCB->readWriteableCnt[OS_QUEUE_READ] = 0;
-    queueCB->readWriteableCnt[OS_QUEUE_WRITE] = len;
+    queueCB->readWriteableCnt[OS_QUEUE_READ] = 0;  // 表示可读的元素数量 0
+    queueCB->readWriteableCnt[OS_QUEUE_WRITE] = len; // 表示可写的元素数量 6
     queueCB->queueHead = 0;
     queueCB->queueTail = 0;
-    LOS_ListInit(&queueCB->readWriteList[OS_QUEUE_READ]);
-    LOS_ListInit(&queueCB->readWriteList[OS_QUEUE_WRITE]);
+    LOS_ListInit(&queueCB->readWriteList[OS_QUEUE_READ]);  // 读链表
+    LOS_ListInit(&queueCB->readWriteList[OS_QUEUE_WRITE]); // 写链表
     LOS_ListInit(&queueCB->memList);
     LOS_IntRestore(intSave);
 

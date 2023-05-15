@@ -81,6 +81,8 @@ LITE_OS_SEC_TEXT VOID OsSwtmrTask(VOID)
 
     for (;;) {
         readSize = sizeof(SwtmrHandlerItem);
+        // g_swtmrHandlerQueue在OsSwtmrInit被赋值，表示其管理的队列ID
+        // LOS_WAIT_FOREVER表示，如果队列为空，进入阻塞状态，加入等待队列，直到被唤醒
         ret = LOS_QueueReadCopy(g_swtmrHandlerQueue, &swtmrHandle, &readSize, LOS_WAIT_FOREVER);
         if ((ret == LOS_OK) && (readSize == sizeof(SwtmrHandlerItem))) {
             if ((swtmrHandle.handler == NULL) || (swtmrHandle.swtmrID >= OS_SWTMR_MAX_TIMERID)) {
@@ -308,12 +310,14 @@ STATIC BOOL OsSwtmrScan(VOID)
 
     SortLinkList *sortList = LOS_DL_LIST_ENTRY(listObject->pstNext, SortLinkList, sortLinkNode);
     UINT64 currTime = OsGetCurrSchedTimeCycle();
+    // 如果任务超时，将任务从sortlink上删除
     while (sortList->responseTime <= currTime) {
         SWTMR_CTRL_S *swtmr = LOS_DL_LIST_ENTRY(sortList, SWTMR_CTRL_S, stSortList);
         swtmr->startTime = GET_SORTLIST_VALUE(sortList);
 
         OsDeleteNodeSortLink(sortList);
         OsHookCall(LOS_HOOK_TYPE_SWTMR_EXPIRED, swtmr);
+        // 对swtmr进行超时处理
         OsSwtmrTimeoutHandle(currTime, swtmr);
 
         needSchedule = TRUE;
@@ -389,21 +393,25 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsSwtmrInit(VOID)
 
 #if (LOSCFG_BASE_CORE_SWTMR_ALIGN == 1)
     // Ignore the return code when matching CSEC rule 6.6(1).
+    // g_swtmrAlignID初始化为0值
     (VOID)memset_s((VOID *)g_swtmrAlignID, sizeof(SwtmrAlignData) * LOSCFG_BASE_CORE_SWTMR_LIMIT,
                    0, sizeof(SwtmrAlignData) * LOSCFG_BASE_CORE_SWTMR_LIMIT);
 #endif
 
     size = sizeof(SWTMR_CTRL_S) * LOSCFG_BASE_CORE_SWTMR_LIMIT;
+    // 为swtmr 申请空间，6个结构体大小的空间
     SWTMR_CTRL_S *swtmr = (SWTMR_CTRL_S *)LOS_MemAlloc(m_aucSysMem0, size);
     if (swtmr == NULL) {
         return LOS_ERRNO_SWTMR_NO_MEMORY;
     }
     // Ignore the return code when matching CSEC rule 6.6(3).
+    // 初始化为0值
     (VOID)memset_s((VOID *)swtmr, size, 0, size);
     g_swtmrCBArray = swtmr;
     g_swtmrFreeList = swtmr;
     swtmr->usTimerID = 0;
     SWTMR_CTRL_S *temp = swtmr;
+    // 按数组的形式给swtmr中的6个元素赋值，并使用pstNext指针串联成单链表
     swtmr++;
     for (index = 1; index < LOSCFG_BASE_CORE_SWTMR_LIMIT; index++, swtmr++) {
         swtmr->usTimerID = index;
@@ -411,6 +419,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsSwtmrInit(VOID)
         temp = swtmr;
     }
 
+    // 初始化1个队列，队列中的包含一个读链表和一个写链表，长度均为6，g_swtmrHandlerQueue记录队列的ID
     ret = LOS_QueueCreate((CHAR *)NULL, OS_SWTMR_HANDLE_QUEUE_SIZE,
                           &g_swtmrHandlerQueue, 0, sizeof(SwtmrHandlerItem));
     if (ret != LOS_OK) {
@@ -424,6 +433,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsSwtmrInit(VOID)
         return LOS_ERRNO_SWTMR_TASK_CREATE_FAILED;
     }
 
+    // g_swtmrSortLinkList = g_swtmrSortLink
     g_swtmrSortLinkList = OsGetSortLinkAttribute(OS_SORT_LINK_SWTMR);
     if (g_swtmrSortLinkList == NULL) {
         (VOID)LOS_MemFree(m_aucSysMem0, swtmr);

@@ -107,44 +107,44 @@
 .endm
 
 HalTaskContextSwitch:
-    PUSH_ALL_REG
+    PUSH_ALL_REG   // 保存g_losTask.runTask寄存器的值至栈
 
-    // clear mpie， 为1 中断打开， 为0,中断关闭
-    li   a2, RISCV_MSTATUS_MPIE
-    not  a2, a2
-    and  a0, a0, a2
+    // clear mpie, a0 = mstatus 寄存器，由ArchIntLock而来，第8位表示MPIE
+    li   a2, RISCV_MSTATUS_MPIE  // a2 = 0x0000 0080
+    not  a2, a2      // a2 = 0xFFFF FF7F
+    and  a0, a0, a2  // a0 = a0 and a2
 
     // get mie
-    andi a1, a0, RISCV_MSTATUS_MIE  # a1 = mie + a0
+    andi a1, a0, RISCV_MSTATUS_MIE  # a1 = a0 & 0x00000008, 获得mie位的值
 
     // must be in machine mode
-    ori  a1, a1, 0x180
-    slli a1, a1, 0x4
-    or   a0, a0, a1
+    ori  a1, a1, 0x180  # a1 = 0x188
+    slli a1, a1, 0x4    # a1 = 0x1880,即MPP = 0x11 机器模式
+    or   a0, a0, a1     # a0 = a0 | a1 ,设置MPP同时设置MPIE = 1
+    # 上面的代码完成了清除MPIE位，获取MIE位，设置MPP=0x11，设置MPIE = 1
 
     // clear mie
-    li   a2, RISCV_MSTATUS_MIE
-    not  a2, a2
-    and  a0, a0, a2
+    li   a2, RISCV_MSTATUS_MIE  # a2 = 0x0000 0008
+    not  a2, a2                 # a2 = 0xffff fff7
+    and  a0, a0, a2             # a0 = a0 | a2 = 0x1880,清除mie位，mie中断使能位
 
-    SREG a0, 16 * REGBYTES(sp)
+    SREG a0, 16 * REGBYTES(sp)  # 保存a0和ra
     SREG ra, 17 * REGBYTES(sp)
 
-    la   a1, g_losTask
-    lw   a0, 0(a1)
-    sw   sp, TASK_CB_KERNEL_SP(a0)
+    la   a1, g_losTask  # a1 = g_losTask
+    lw   a0, 0(a1)      # a0 = g_losTask.runTask
+    sw   sp, TASK_CB_KERNEL_SP(a0)  # 保存sp 至a0栈
 
-    lw   a0, 4(a1)
-    sw   a0, 0(a1)
+    lw   a0, 4(a1)      # a0 = g_losTask.newTask
+    sw   a0, 0(a1)      # g_losTask.runTask = a0
 
 HalStartToRun:
-    la   a1, g_losTask
-    lw   a0, 4(a1)
+    la   a1, g_losTask  # a1 = g_losTask
+    lw   a0, 4(a1)      # a0 = g_losTask.newTask
 
 // retireve stack pointer
-    lw      sp, TASK_CB_KERNEL_SP(a0)
+    lw      sp, TASK_CB_KERNEL_SP(a0)  // sp 指针指向 newTask 的sp
 
-// enable global interrupts
     lw      t0, 16 * REGBYTES(sp)
     csrw    mstatus, t0
 
@@ -153,7 +153,7 @@ HalStartToRun:
     csrw    mepc, t0
 
 // retrieve the registers
-    POP_ALL_REG
+    POP_ALL_REG   // 从栈中恢复寄存器的值，开始执行 newTask
 
     mret
 
@@ -169,14 +169,14 @@ HalEnableIRQ:
 
 ArchIntLock:
     csrr    a0, mstatus           // return value
-    li      t0, RISCV_MSTATUS_MIE   // mie
-    csrrc   zero, mstatus, t0
+    li      t0, RISCV_MSTATUS_MIE   // t0 = 0x0000 0008
+    csrrc   zero, mstatus, t0     // clear MIE 中断禁止
     ret
 
 ArchIntUnLock:
     csrr    a0, mstatus           // return value
-    li      t0, RISCV_MSTATUS_MIE   // mie
-    csrrs   zero, mstatus, t0
+    li      t0, RISCV_MSTATUS_MIE   // t0 = 0x0000 0008
+    csrrs   zero, mstatus, t0     // set MIE 中断使能
     ret
 
 ArchIntRestore:

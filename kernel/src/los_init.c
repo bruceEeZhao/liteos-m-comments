@@ -157,6 +157,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_KernelInit(VOID)
     // 中断初始化
     ArchInit();
 
+    // 硬件时钟初始化，时钟中断函数绑定
     ret = OsTickTimerInit();
     if (ret != LOS_OK) {
         PRINT_ERR("OsTickTimerInit error! 0x%x\n", ret);

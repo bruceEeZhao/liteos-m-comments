@@ -431,8 +431,8 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsTaskInit(VOID)
     (VOID)memset_s(g_taskCBArray, size, 0, size);
 
     // 初始化g_losFreeTask 和 g_taskRecycleList
-    LOS_ListInit(&g_losFreeTask);
-    LOS_ListInit(&g_taskRecycleList);
+    LOS_ListInit(&g_losFreeTask);  // 未使用的taskCB
+    LOS_ListInit(&g_taskRecycleList); // 需要回收的taskCB
 
     // 初始化 任务数组中的元素[0:20]，status为 未使用，taskid为index
     // 将 pendList 使用尾插法插入 g_losFreeTask 
@@ -1168,7 +1168,6 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_TaskDetach(UINT32 taskID)
     return ret;
 }
 
-// TODO 不明白
 LITE_OS_SEC_TEXT_INIT STATIC_INLINE VOID OsRunningTaskDelete(UINT32 taskID, LosTaskCB *taskCB)
 {
     LOS_ListTailInsert(&g_taskRecycleList, &taskCB->pendList);
