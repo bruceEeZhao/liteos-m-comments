@@ -148,8 +148,11 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsTickTimerInit(VOID)
 {
     UINT32 ret;
     UINT32 intSave;
+
+    // 注册中断处理函数 tickHandler = LOS_SchedTickHandler
     HWI_PROC_FUNC tickHandler = (HWI_PROC_FUNC)OsTickHandler;
 
+    // g_sysTickTimer = g_archTickTimer
     g_sysTickTimer = LOS_SysTickTimerGet();
     if ((g_sysTickTimer->init == NULL) || (g_sysTickTimer->reload == NULL) ||
         (g_sysTickTimer->lock == NULL) || (g_sysTickTimer->unlock == NULL) ||
@@ -162,6 +165,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsTickTimerInit(VOID)
     }
 
     intSave = LOS_IntLock();
+    // 修改g_hwiForm，注册中断处理函数
     ret = g_sysTickTimer->init(tickHandler);
     if (ret != LOS_OK) {
         LOS_IntRestore(intSave);

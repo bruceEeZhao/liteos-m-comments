@@ -353,7 +353,9 @@ VOID OsSchedTaskWait(LOS_DL_LIST *list, UINT32 ticks)
 }
 
 /**
- * @brief 取消PEND标志，将resumed的task加入优先级队列中--唤醒一个task
+ * @brief 取消PEND标志，
+ *        1. 如果状态是PEND_TIME，则将task从sortList中删除
+ *        2. 将resumed的task加入优先级队列中--唤醒一个task
  * 
  * @param resumedTask 
  * @return VOID 
@@ -704,6 +706,7 @@ VOID LOS_SchedTickHandler(VOID)
     if (g_schedResponseID == OS_INVALID) {
         g_tickIntLock++;
         if (g_swtmrScan != NULL) {
+            // 调用软件timer的scan函数
             (VOID)g_swtmrScan();
         }
         // 检查sortlist，处理超时的任务

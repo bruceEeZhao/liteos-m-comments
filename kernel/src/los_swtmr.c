@@ -222,7 +222,7 @@ RETURN_PERIOD:
 
 /*****************************************************************************
 Function    : OsSwtmrStart
-Description : Start Software Timer
+Description : Start Software Timer，将软件timer插入g_swtmrSortLink
 Input       : currTime ------- Current system time
 Input       : swtmr ---------- Need to start Software Timer
 Output      : None
@@ -269,7 +269,12 @@ STATIC VOID OsSwtmrDelete(SWTMR_CTRL_S *swtmr)
 #endif
 }
 
-
+/**
+ * @brief 将软件timer从g_swtmrSortLink中删除
+ * 
+ * @param swtmr 
+ * @return LITE_OS_SEC_TEXT 
+ */
 LITE_OS_SEC_TEXT VOID OsSwtmrStop(SWTMR_CTRL_S *swtmr)
 {
     OsDeleteSortLink(&swtmr->stSortList);
@@ -286,11 +291,14 @@ STATIC VOID OsSwtmrTimeoutHandle(UINT64 currTime, SWTMR_CTRL_S *swtmr)
 {
     SwtmrHandlerItem swtmrHandler;
 
+    // swtmr 赋值给 swtmrHandler
     swtmrHandler.handler = swtmr->pfnHandler;
     swtmrHandler.arg = swtmr->uwArg;
     swtmrHandler.swtmrID = swtmr->usTimerID;
 
+    // 将swtmrHandler写入swtmr维护的消息队列
     (VOID)LOS_QueueWriteCopy(g_swtmrHandlerQueue, &swtmrHandler, sizeof(SwtmrHandlerItem), LOS_NO_WAIT);
+    // 如果该timer是一个周期性的任务，则把该timer加入到g_swtmrSortLink有序链表中
     if (swtmr->ucMode == LOS_SWTMR_MODE_PERIOD) {
         swtmr->ucOverrun++;
         OsSwtmrStart(currTime, swtmr);
@@ -304,6 +312,7 @@ STATIC BOOL OsSwtmrScan(VOID)
     BOOL needSchedule = FALSE;
     LOS_DL_LIST *listObject = &g_swtmrSortLinkList->sortLink;
 
+    // 如果有序链表为空，则不需要进行调度，直接返回
     if (LOS_ListEmpty(listObject)) {
         return needSchedule;
     }
@@ -419,7 +428,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsSwtmrInit(VOID)
         temp = swtmr;
     }
 
-    // 初始化1个队列，队列中的包含一个读链表和一个写链表，长度均为6，g_swtmrHandlerQueue记录队列的ID
+    // 初始化1个队列，队列中的包含一个读链表和一个写链表，g_swtmrHandlerQueue记录队列的ID
     ret = LOS_QueueCreate((CHAR *)NULL, OS_SWTMR_HANDLE_QUEUE_SIZE,
                           &g_swtmrHandlerQueue, 0, sizeof(SwtmrHandlerItem));
     if (ret != LOS_OK) {

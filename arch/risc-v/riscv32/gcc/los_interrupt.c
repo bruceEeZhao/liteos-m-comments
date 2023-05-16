@@ -103,6 +103,11 @@ LITE_OS_SEC_TEXT_INIT VOID HalHwiDefaultHandler(VOID *arg)
     }
 }
 
+/**
+ * @brief 中断处理函数初始化，初始化为默认handler
+ * 
+ * @return LITE_OS_SEC_TEXT_INIT 
+ */
 LITE_OS_SEC_TEXT_INIT VOID HalHwiInit(VOID)
 {
     UINT32 index;

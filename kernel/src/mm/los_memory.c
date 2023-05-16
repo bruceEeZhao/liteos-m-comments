@@ -941,7 +941,7 @@ STATIC UINT32 OsMemPoolInit(VOID *pool, UINT32 size)
     /* default attr: lock, not expand. */
     poolHead->info.attr &= ~(OS_MEM_POOL_UNLOCK_ENABLE | OS_MEM_POOL_EXPAND_ENABLE);
 
-    newNode = OS_MEM_FIRST_NODE(pool);
+    newNode = OS_MEM_FIRST_NODE(pool);  // OsMemPoolHead 后面的位置
     newNode->sizeAndFlag = (size - sizeof(struct OsMemPoolHead) - OS_MEM_NODE_HEAD_SIZE);
     newNode->ptr.prev = OS_MEM_END_NODE(pool, size);
     OS_MEM_SET_MAGIC(newNode);
@@ -2282,7 +2282,7 @@ UINT32 OsMemSystemInit(VOID)
     UINT32 ret;
 
 #if (LOSCFG_SYS_EXTERNAL_HEAP == 0)
-    m_aucSysMem0 = g_memStart;
+    m_aucSysMem0 = g_memStart;  // 14M
 #else
     m_aucSysMem0 = LOSCFG_SYS_HEAP_ADDR;
 #endif

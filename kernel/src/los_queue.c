@@ -63,7 +63,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 OsQueueInit(VOID)
         return LOS_ERRNO_QUEUE_MAXNUM_ZERO;
     }
 
-    // 初始化队列，共有6个队列
+    // 初始化队列，共有6个Queue CB
     g_allQueue = (LosQueueCB *)LOS_MemAlloc(m_aucSysMem0, LOSCFG_BASE_IPC_QUEUE_LIMIT * sizeof(LosQueueCB));
     if (g_allQueue == NULL) {
         return LOS_ERRNO_QUEUE_NO_MEMORY;
@@ -109,6 +109,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_QueueCreate(const CHAR *queueName,
     (VOID)queueName;
     (VOID)flags;
 
+    // 参数合法性验证
     if (queueID == NULL) {
         return LOS_ERRNO_QUEUE_CREAT_PTR_NULL;
     }
@@ -120,13 +121,17 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_QueueCreate(const CHAR *queueName,
     if ((len == 0) || (maxMsgSize == 0)) {
         return LOS_ERRNO_QUEUE_PARA_ISZERO;
     }
+
+    // 消息大小为最大消息大小+4字节
     msgSize = maxMsgSize + sizeof(UINT32);
 
     /* Memory allocation is time-consuming, to shorten the time of disable interrupt,
        move the memory allocation to here. */
+    // 如果消息个数*每个消息的大小大于32位最大值，则消息队列中消息的大小可能会太大，不允许
     if ((UINT32_MAX / msgSize) < len) {
         return LOS_ERRNO_QUEUE_SIZE_TOO_BIG;
     }
+    // 申请空间，消息队列中的消息是一个数组，一次申请全部所需空间
     queue = (UINT8 *)LOS_MemAlloc(m_aucSysMem0, (UINT32)len * msgSize);
     if (queue == NULL) {
         return LOS_ERRNO_QUEUE_CREATE_NO_MEMORY;
@@ -218,6 +223,7 @@ static INLINE VOID OsQueueBufferOperate(LosQueueCB *queueCB, UINT32 operateType,
     errno_t rc;
 
     /* get the queue position */
+    // queueCB->queue 作为循环数组使用，获取下标
     switch (OS_QUEUE_OPERATE_GET(operateType)) {
         case OS_QUEUE_READ_HEAD:
             queuePosition = queueCB->queueHead;
@@ -239,6 +245,7 @@ static INLINE VOID OsQueueBufferOperate(LosQueueCB *queueCB, UINT32 operateType,
             return;
     }
 
+    // 根据下标获取数组元素
     queueNode = &(queueCB->queue[(queuePosition * (queueCB->queueSize))]);
 
     if (OS_QUEUE_IS_POINT(operateType)) {
@@ -248,7 +255,7 @@ static INLINE VOID OsQueueBufferOperate(LosQueueCB *queueCB, UINT32 operateType,
             *(UINTPTR *)(VOID *)queueNode = *(UINTPTR *)bufferAddr;
         }
     } else {
-        if (OS_QUEUE_IS_READ(operateType)) {
+        if (OS_QUEUE_IS_READ(operateType)) {  // read
             msgDataSize = *((UINT32 *)(UINTPTR)((queueNode + queueCB->queueSize) - sizeof(UINT32)));
             rc = memcpy_s((VOID *)bufferAddr, *bufferSize, (VOID *)queueNode, msgDataSize);
             if (rc != EOK) {
@@ -257,7 +264,7 @@ static INLINE VOID OsQueueBufferOperate(LosQueueCB *queueCB, UINT32 operateType,
             }
 
             *bufferSize = msgDataSize;
-        } else {
+        } else { // write
             *((UINT32 *)(UINTPTR)((queueNode + queueCB->queueSize) - sizeof(UINT32))) = *bufferSize;
             rc = memcpy_s((VOID *)queueNode, queueCB->queueSize, (VOID *)bufferAddr, *bufferSize);
             if (rc != EOK) {
@@ -303,6 +310,8 @@ UINT32 OsQueueOperate(UINT32 queueID, UINT32 operateType, VOID *bufferAddr, UINT
         goto QUEUE_END;
     }
 
+    // 如果要读写的链表为空，则将task加入readWriteList[readWrite]队列，
+    // 把task置为PEND（timeOut == LOS_WAIT_FOREVER）或PEND_TIME状态
     if (queueCB->readWriteableCnt[readWrite] == 0) {
         if (timeOut == LOS_NO_WAIT) {
             ret = OS_QUEUE_IS_READ(operateType) ? LOS_ERRNO_QUEUE_ISEMPTY : LOS_ERRNO_QUEUE_ISFULL;
@@ -331,8 +340,9 @@ UINT32 OsQueueOperate(UINT32 queueID, UINT32 operateType, VOID *bufferAddr, UINT
 
     OsQueueBufferOperate(queueCB, operateType, bufferAddr, bufferSize);
 
-
+    // 如果另一个链表（本身为读，则另一个为写）非空，
     if (!LOS_ListEmpty(&queueCB->readWriteList[readWriteTmp])) {
+        // 从链表取出一个元素，并resume
         resumedTask = OS_TCB_FROM_PENDLIST(LOS_DL_LIST_FIRST(&queueCB->readWriteList[readWriteTmp]));
         OsSchedTaskWake(resumedTask);
         LOS_IntRestore(intSave);

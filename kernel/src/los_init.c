@@ -148,6 +148,7 @@ LITE_OS_SEC_TEXT_INIT UINT32 LOS_KernelInit(VOID)
 #ifdef LOSCFG_KERNEL_LMS
     OsLmsInit();
 #endif
+    // 动态内存初始化
     ret = OsMemSystemInit();
     if (ret != LOS_OK) {
         PRINT_ERR("OsMemSystemInit error %d\n", ret);
