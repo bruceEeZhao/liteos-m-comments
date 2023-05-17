@@ -167,8 +167,8 @@ struct OsMemPoolInfo {
 
 struct OsMemPoolHead {
     struct OsMemPoolInfo info;
-    UINT32 freeListBitmap[OS_MEM_BITMAP_WORDS];
-    struct OsMemFreeNodeHead *freeList[OS_MEM_FREE_LIST_COUNT];
+    UINT32 freeListBitmap[OS_MEM_BITMAP_WORDS]; // (((31 + (24 << 3)) >> 5) + 1) = 7，每一位表示一条链表
+    struct OsMemFreeNodeHead *freeList[OS_MEM_FREE_LIST_COUNT]; // (31 + (24 << 3)) = 223
 #if (LOSCFG_MEM_MUL_POOL == 1)
     VOID *nextPool;
 #endif
@@ -725,6 +725,13 @@ STATIC INLINE UINT32 OsMemFreeListIndexGet(UINT32 size)
     return (OS_MEM_SMALL_BUCKET_COUNT + ((fl - OS_MEM_SMALL_BUCKET_COUNT) << OS_MEM_SLI) + sl);
 }
 
+/**
+ * @brief 遍历index链表所有元素直到找到一个大于要申请内存大小的块
+ * 
+ * @param poolHead 
+ * @param index 
+ * @return UINT32 
+ */
 STATIC INLINE struct OsMemFreeNodeHead *OsMemFindCurSuitableBlock(struct OsMemPoolHead *poolHead,
                                         UINT32 index, UINT32 size)
 {
@@ -752,6 +759,19 @@ STATIC INLINE UINT32 OsMemNotEmptyIndexGet(struct OsMemPoolHead *poolHead, UINT3
     return OS_MEM_FREE_LIST_COUNT;
 }
 
+/**
+ * @brief 根据size计算一级index(fl)和二级index(sl)，并计算最终的 curIndex
+ *        如果fl<31，则调用OsMemNotEmptyIndexGet从 fl 对应的级别取一个内存块，成功则返回
+ *        查看更大量级（curIndex 对应的下一个级别）内存块的 bitmap ，如果 bitmap 不为0，则返回该 index
+ *        若上述均失败：
+ *          遍历当前量级（curIndex）对应的链表，直到找到一个大于所需空间的内存块
+ *        
+ * 
+ * @param pool 
+ * @param size 
+ * @param outIndex 
+ * @return struct OsMemFreeNodeHead * 
+ */
 STATIC INLINE struct OsMemFreeNodeHead *OsMemFindNextSuitableBlock(VOID *pool, UINT32 size, UINT32 *outIndex)
 {
     struct OsMemPoolHead *poolHead = (struct OsMemPoolHead *)pool;
@@ -767,15 +787,20 @@ STATIC INLINE struct OsMemFreeNodeHead *OsMemFindNextSuitableBlock(VOID *pool, U
         } else {
             sl = OsMemSlGet(size, fl);
             curIndex = ((fl - OS_MEM_SMALL_BUCKET_COUNT) << OS_MEM_SLI) + sl + OS_MEM_SMALL_BUCKET_COUNT;
+            // 优先从更大的块中查找，这样直接取链表的第一个元素即可
             index = curIndex + 1;
         }
 
+        // 如果fl < 31
         tmp = OsMemNotEmptyIndexGet(poolHead, index);
+        // 如果找到合适的元素
         if (tmp != OS_MEM_FREE_LIST_COUNT) {
             index = tmp;
             goto DONE;
         }
 
+        // 检查大于128的块，优先从更大的块（粒度是一级区间）中查找，这样直接取链表的第一个元素即可
+        // 遍历bitmap，mask不为0,则找到对应的链表
         for (index = LOS_Align(index + 1, 32); index < OS_MEM_FREE_LIST_COUNT; index += 32) {
             /* 5: Divide by 32 to calculate the index of the bitmap array. */
             mask = poolHead->freeListBitmap[index >> 5];
@@ -791,6 +816,7 @@ STATIC INLINE struct OsMemFreeNodeHead *OsMemFindNextSuitableBlock(VOID *pool, U
     }
 
     *outIndex = curIndex;
+    // 遍历index链表所有元素直到找到一个大于要申请内存大小的块
     return OsMemFindCurSuitableBlock(poolHead, curIndex, size);
 DONE:
     *outIndex = index;
@@ -809,8 +835,17 @@ STATIC INLINE VOID OsMemClearFreeListBit(struct OsMemPoolHead *head, UINT32 inde
     head->freeListBitmap[index >> 5] &= ~(1U << (index & 0x1f));
 }
 
+/**
+ * @brief 使用头插法，将node插入双向链表中，并更新bitmap
+ * 
+ * @param pool 
+ * @param listIndex 
+ * @param node 
+ * @return STATIC 
+ */
 STATIC INLINE VOID OsMemListAdd(struct OsMemPoolHead *pool, UINT32 listIndex, struct OsMemFreeNodeHead *node)
 {
+    // 使用头插法，插入双向链表中
     struct OsMemFreeNodeHead *firstNode = pool->freeList[listIndex];
     if (firstNode != NULL) {
         firstNode->prev = node;
@@ -818,10 +853,19 @@ STATIC INLINE VOID OsMemListAdd(struct OsMemPoolHead *pool, UINT32 listIndex, st
     node->prev = NULL;
     node->next = firstNode;
     pool->freeList[listIndex] = node;
+    // 更新bitmap
     OsMemSetFreeListBit(pool, listIndex);
     OS_MEM_SET_MAGIC(&node->header);
 }
 
+/**
+ * @brief 将node从pool->freeList[listIndex]中删除
+ * 
+ * @param pool 
+ * @param listIndex 
+ * @param node 
+ * @return STATIC 
+ */
 STATIC INLINE VOID OsMemListDelete(struct OsMemPoolHead *pool, UINT32 listIndex, struct OsMemFreeNodeHead *node)
 {
     if (node == pool->freeList[listIndex]) {
@@ -840,12 +884,22 @@ STATIC INLINE VOID OsMemListDelete(struct OsMemPoolHead *pool, UINT32 listIndex,
     OS_MEM_SET_MAGIC(&node->header);
 }
 
+/**
+ * @brief 1. 根据node.size计算node应该插在哪条空闲链表上
+ *        2. 使用头插法，将node插入双向链表中，并更新bitmap
+ * 
+ * @param pool 
+ * @param node 
+ * @return STATIC 
+ */
 STATIC INLINE VOID OsMemFreeNodeAdd(VOID *pool, struct OsMemFreeNodeHead *node)
-{
+{   
+    // 根据size计算node应该插在哪条空闲链表上
     UINT32 index = OsMemFreeListIndexGet(node->header.sizeAndFlag);
     if (index >= OS_MEM_FREE_LIST_COUNT) {
         LOS_Panic("The index of free lists is error, index = %u\n", index);
     }
+    // 使用头插法，将node插入双向链表中，并更新bitmap
     OsMemListAdd(pool, index, node);
 }
 
@@ -859,11 +913,13 @@ STATIC INLINE struct OsMemNodeHead *OsMemFreeNodeGet(VOID *pool, UINT32 size)
 {
     struct OsMemPoolHead *poolHead = (struct OsMemPoolHead *)pool;
     UINT32 index;
+    // 获取一个满足要求的块
     struct OsMemFreeNodeHead *firstNode = OsMemFindNextSuitableBlock(pool, size, &index);
     if (firstNode == NULL) {
         return NULL;
     }
 
+    // 将node从pool->freeList[listIndex]中删除
     OsMemListDelete(poolHead, index, firstNode);
 
     return &firstNode->header;
@@ -880,27 +936,49 @@ STATIC INLINE VOID OsMemMergeNode(struct OsMemNodeHead *node)
     }
 }
 
+/**
+ * @brief 对allocNode进行切分，剩余的部分称为newFreeNode，
+ *        之后对newFreeNode下一块内存进行检查，如果下一块内存未被使用，则与newFreeNode进行组合形成一块新内存
+ *        将newFreeNode插入空闲链表进行管理
+ * 
+ * @param pool 
+ * @param allocNode 
+ * @param allocSize 
+ * @return STATIC 
+ */
 STATIC INLINE VOID OsMemSplitNode(VOID *pool, struct OsMemNodeHead *allocNode, UINT32 allocSize)
 {
     struct OsMemFreeNodeHead *newFreeNode = NULL;
     struct OsMemNodeHead *nextNode = NULL;
 
+    // newFreeNode 起始地址，在后半部分
     newFreeNode = (struct OsMemFreeNodeHead *)(VOID *)((UINT8 *)allocNode + allocSize);
     newFreeNode->header.ptr.prev = allocNode;
     newFreeNode->header.sizeAndFlag = allocNode->sizeAndFlag - allocSize;
     allocNode->sizeAndFlag = allocSize;
+    // newFreeNode 结束地址的下一个字节
     nextNode = OS_MEM_NEXT_NODE(&newFreeNode->header);
     if (!OS_MEM_NODE_GET_LAST_FLAG(nextNode->sizeAndFlag) && !OS_MEM_IS_GAP_NODE(nextNode)) {
         nextNode->ptr.prev = &newFreeNode->header;
+
+        // 如果下一块内存没有被使用，则将下一块内存从pool->freeList[listIndex]中删除，
+        // 并和newFreeNode组合成一块新的内存,用newFreeNode进行标识
         if (!OS_MEM_NODE_GET_USED_FLAG(nextNode->sizeAndFlag)) {
             OsMemFreeNodeDelete(pool, (struct OsMemFreeNodeHead *)nextNode);
             OsMemMergeNode(nextNode);
         }
     }
 
+    // 把newFreeNode插入链表
     OsMemFreeNodeAdd(pool, newFreeNode);
 }
 
+/**
+ * @brief 返回用户真正可用的起始地址，即head下一个字节的地址
+ * 
+ * @param addr 
+ * @return VOID* 
+ */
 STATIC INLINE VOID *OsMemCreateUsedNode(VOID *addr)
 {
     struct OsMemUsedNodeHead *node = (struct OsMemUsedNodeHead *)addr;
@@ -938,13 +1016,17 @@ STATIC UINT32 OsMemPoolInit(VOID *pool, UINT32 size)
 
     poolHead->info.pool = pool;
     poolHead->info.totalSize = size;
-    /* default attr: lock, not expand. */
+    /* default attr: lock, not expand. 属性：锁定，不可扩展*/
     poolHead->info.attr &= ~(OS_MEM_POOL_UNLOCK_ENABLE | OS_MEM_POOL_EXPAND_ENABLE);
 
     newNode = OS_MEM_FIRST_NODE(pool);  // OsMemPoolHead 后面的位置
+    // size - 内存池头大小 - 块头大小,即剩余的全部空间
     newNode->sizeAndFlag = (size - sizeof(struct OsMemPoolHead) - OS_MEM_NODE_HEAD_SIZE);
+    // 设置prev指向内存池的最后一个节点
     newNode->ptr.prev = OS_MEM_END_NODE(pool, size);
     OS_MEM_SET_MAGIC(newNode);
+    // 1. 根据node.size计算node应该插在哪条空闲链表上
+    // 2. 使用头插法，将node插入双向链表中，并更新bitmap
     OsMemFreeNodeAdd(pool, (struct OsMemFreeNodeHead *)newNode);
 
     /* The last mem node */
@@ -959,7 +1041,9 @@ STATIC UINT32 OsMemPoolInit(VOID *pool, UINT32 size)
     OS_MEM_NODE_SET_USED_FLAG(endNode->sizeAndFlag);
 #endif
 #if (LOSCFG_MEM_WATERLINE == 1)
+    // 当前使用的空间大小 = 内存池头大小 + 块头大小
     poolHead->info.curUsedSize = sizeof(struct OsMemPoolHead) + OS_MEM_NODE_HEAD_SIZE;
+    // 水线，当前内存使用情况
     poolHead->info.waterLine = poolHead->info.curUsedSize;
 #endif
 
@@ -1036,10 +1120,12 @@ STATIC UINT32 OsMemPoolDelete(VOID *pool)
 
 UINT32 LOS_MemInit(VOID *pool, UINT32 size)
 {
+    // size 需要大于最小值
     if ((pool == NULL) || (size <= OS_MEM_MIN_POOL_SIZE)) {
         return LOS_NOK;
     }
 
+    // 起始地没有按4字节对齐 或 size没有按4字节对齐
     if (((UINTPTR)pool & (OS_MEM_ALIGN_SIZE - 1)) || \
         (size & (OS_MEM_ALIGN_SIZE - 1))) {
         PRINT_ERR("LiteOS heap memory address or size configured not aligned:address:0x%x,size:0x%x, alignsize:%d\n", \
@@ -1051,6 +1137,7 @@ UINT32 LOS_MemInit(VOID *pool, UINT32 size)
         return LOS_NOK;
     }
 
+// 多内存池支持
 #if (LOSCFG_MEM_MUL_POOL == 1)
     if (OsMemPoolAdd(pool, size)) {
         (VOID)OsMemPoolDeinit(pool);
@@ -1105,11 +1192,14 @@ STATIC INLINE VOID *OsMemAlloc(struct OsMemPoolHead *pool, UINT32 size, UINT32 i
     }
 #endif
 
+    // 申请的内存大小需要加上头结点的大小，并以4字节对齐
     UINT32 allocSize = OS_MEM_ALIGN(size + OS_MEM_NODE_HEAD_SIZE, OS_MEM_ALIGN_SIZE);
 #if OS_MEM_EXPAND_ENABLE || (LOSCFG_KERNEL_LMK == 1)
 retry:
 #endif
+    // 从空闲链表中获取一个满足申请大小的空闲内存块
     allocNode = OsMemFreeNodeGet(pool, allocSize);
+    // 如果申请失败，打印错误信息
     if (allocNode == NULL) {
 #if OS_MEM_EXPAND_ENABLE
         if (pool->info.attr & OS_MEM_POOL_EXPAND_ENABLE) {
@@ -1137,16 +1227,20 @@ retry:
         return NULL;
     }
 
+    // 如果申请到的内存块大小大于等于 所需大小，对内存块进行切分
     if ((allocSize + OS_MEM_MIN_LEFT_SIZE) <= allocNode->sizeAndFlag) {
         OsMemSplitNode(pool, allocNode, allocSize);
     }
 
+    // 设置被使用flag
     OS_MEM_NODE_SET_USED_FLAG(allocNode->sizeAndFlag);
+    // 更新内存使用情况
     OsMemWaterUsedRecord(pool, OS_MEM_NODE_GET_SIZE(allocNode->sizeAndFlag));
 
 #if (LOSCFG_MEM_LEAKCHECK == 1)
     OsMemLinkRegisterRecord(allocNode);
 #endif
+    // 返回用户真正可用的起始地址，即head下一个字节的地址
     return OsMemCreateUsedNode((VOID *)allocNode);
 }
 
@@ -1156,6 +1250,7 @@ VOID *LOS_MemAlloc(VOID *pool, UINT32 size)
         return NULL;
     }
 
+    // 申请内存最小值为8
     if (size < OS_MEM_MIN_ALLOC_SIZE) {
         size = OS_MEM_MIN_ALLOC_SIZE;
     }
@@ -1166,6 +1261,7 @@ VOID *LOS_MemAlloc(VOID *pool, UINT32 size)
 
     MEM_LOCK(poolHead, intSave);
     do {
+        // 是否标记为使用或内存对齐
         if (OS_MEM_NODE_GET_USED_FLAG(size) || OS_MEM_NODE_GET_ALIGNED_FLAG(size)) {
             break;
         }
@@ -1341,6 +1437,7 @@ STATIC UINT32 OsMemCheckUsedNode(const struct OsMemPoolHead *pool, const struct 
 
 STATIC INLINE UINT32 OsMemFree(struct OsMemPoolHead *pool, struct OsMemNodeHead *node)
 {
+    // 参数校验
     UINT32 ret = OsMemCheckUsedNode(pool, node);
     if (ret != LOS_OK) {
         PRINT_ERR("OsMemFree check error!\n");
@@ -1362,13 +1459,14 @@ STATIC INLINE UINT32 OsMemFree(struct OsMemPoolHead *pool, struct OsMemNodeHead 
         g_lms->check((UINTPTR)node + OS_MEM_NODE_HEAD_SIZE, TRUE);
     }
 #endif
+    // 如果前一个内存块没有被使用，与前一块进行merge
     struct OsMemNodeHead *preNode = node->ptr.prev; /* merage preNode */
     if ((preNode != NULL) && !OS_MEM_NODE_GET_USED_FLAG(preNode->sizeAndFlag)) {
         OsMemFreeNodeDelete(pool, (struct OsMemFreeNodeHead *)preNode);
         OsMemMergeNode(node);
         node = preNode;
     }
-
+    // 如果后一个内存块没有被使用，与前一块进行merge
     struct OsMemNodeHead *nextNode = OS_MEM_NEXT_NODE(node); /* merage nextNode */
     if ((nextNode != NULL) && !OS_MEM_NODE_GET_USED_FLAG(nextNode->sizeAndFlag)) {
         OsMemFreeNodeDelete(pool, (struct OsMemFreeNodeHead *)nextNode);
@@ -1386,7 +1484,7 @@ STATIC INLINE UINT32 OsMemFree(struct OsMemPoolHead *pool, struct OsMemNodeHead 
         }
     }
 #endif
-
+    // 将merge后的内存块插入链表
     OsMemFreeNodeAdd(pool, (struct OsMemFreeNodeHead *)node);
 #ifdef LOSCFG_KERNEL_LMS
     if (g_lms != NULL) {
@@ -1399,20 +1497,24 @@ STATIC INLINE UINT32 OsMemFree(struct OsMemPoolHead *pool, struct OsMemNodeHead 
 STATIC INLINE VOID *OsGetRealPtr(const VOID *pool, VOID *ptr)
 {
     VOID *realPtr = ptr;
+    // 获取内存对齐偏移值
     UINT32 gapSize = *((UINT32 *)((UINTPTR)ptr - sizeof(UINT32)));
 
+    // 如果偏移值同时标记为已使用和已对齐，则返回错误
     if (OS_MEM_GAPSIZE_CHECK(gapSize)) {
         PRINT_ERR("[%s:%d]gapSize:0x%x error\n", __FUNCTION__, __LINE__, gapSize);
         return NULL;
     }
-
+    // 如果偏移值标记为已对齐，针对 LOS_MemAllocAlign 函数获取的内存的处理
     if (OS_MEM_GET_GAPSIZE_ALIGNED_FLAG(gapSize)) {
+        // 去除对齐标志，获取不带标记的偏移值
         gapSize = OS_MEM_GET_ALIGNED_GAPSIZE(gapSize);
         if ((gapSize & (OS_MEM_ALIGN_SIZE - 1)) ||
             (gapSize > ((UINTPTR)ptr - OS_MEM_NODE_HEAD_SIZE - (UINTPTR)pool))) {
             PRINT_ERR("[%s:%d]gapSize:0x%x error\n", __FUNCTION__, __LINE__, gapSize);
             return NULL;
         }
+        // 获取内存对齐之前的数据区内存地址
         realPtr = (VOID *)((UINTPTR)ptr - (UINTPTR)gapSize);
     }
     return realPtr;
@@ -1434,11 +1536,14 @@ UINT32 LOS_MemFree(VOID *pool, VOID *ptr)
 
     MEM_LOCK(poolHead, intSave);
     do {
+        // 获取校准内存对齐后的真实内存地址
         ptr = OsGetRealPtr(pool, ptr);
         if (ptr == NULL) {
             break;
         }
+        // 获取内存头结点地址
         node = (struct OsMemNodeHead *)((UINTPTR)ptr - OS_MEM_NODE_HEAD_SIZE);
+        // 释放内存
         ret = OsMemFree(poolHead, node);
     } while (0);
     MEM_UNLOCK(poolHead, intSave);
@@ -2282,7 +2387,7 @@ UINT32 OsMemSystemInit(VOID)
     UINT32 ret;
 
 #if (LOSCFG_SYS_EXTERNAL_HEAP == 0)
-    m_aucSysMem0 = g_memStart;  // 14M
+    m_aucSysMem0 = g_memStart;  // 14K
 #else
     m_aucSysMem0 = LOSCFG_SYS_HEAP_ADDR;
 #endif
