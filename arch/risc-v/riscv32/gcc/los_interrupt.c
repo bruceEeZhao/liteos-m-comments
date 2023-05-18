@@ -117,21 +117,28 @@ LITE_OS_SEC_TEXT_INIT VOID HalHwiInit(VOID)
     }
 }
 
+
 typedef VOID (*HwiProcFunc)(VOID *arg);
+/**
+ * @brief 系统中断入口函数
+ * 
+ */
 __attribute__((section(".interrupt.text"))) VOID HalHwiInterruptDone(HWI_HANDLE_T hwiNum)
-{
+{   
+    // g_intCount++,声明此时处于中断处理
     g_intCount++;
 
     OsHookCall(LOS_HOOK_TYPE_ISR_ENTER, hwiNum);
 
     HWI_HANDLE_FORM_S *hwiForm = &g_hwiForm[hwiNum];
     HwiProcFunc func = (HwiProcFunc)(hwiForm->pfnHook);
+    // 调用相应的中断处理函数，进行中断处理
     func(hwiForm->uwParam);
-
+    // 记录中断执行次数
     ++g_hwiFormCnt[hwiNum];
 
     OsHookCall(LOS_HOOK_TYPE_ISR_EXIT, hwiNum);
-
+    // 声明结束中断处理状态
     g_intCount--;
 }
 
@@ -174,6 +181,7 @@ LITE_OS_SEC_TEXT UINT32 ArchHwiCreate(HWI_HANDLE_T hwiNum,
 {
     UINT32 intSave;
 
+    // 参数合法性校验
     if (hwiHandler == NULL) {
         return OS_ERRNO_HWI_PROC_FUNC_NULL;
     }
@@ -190,6 +198,7 @@ LITE_OS_SEC_TEXT UINT32 ArchHwiCreate(HWI_HANDLE_T hwiNum,
     }
 
     intSave = LOS_IntLock();
+    // 注册中断处理函数
     g_hwiForm[hwiNum].pfnHook = hwiHandler;
     if (irqParam != NULL) {
         g_hwiForm[hwiNum].uwParam = (VOID *)irqParam->pDevId;
@@ -222,6 +231,7 @@ LITE_OS_SEC_TEXT UINT32 ArchHwiDelete(HWI_HANDLE_T hwiNum, HwiIrqParam *irqParam
     }
 
     intSave = LOS_IntLock();
+    // 中断处理函数重新指向默认处理函数
     g_hwiForm[hwiNum].pfnHook = HalHwiDefaultHandler;
     g_hwiForm[hwiNum].uwParam = 0;
     LOS_IntRestore(intSave);

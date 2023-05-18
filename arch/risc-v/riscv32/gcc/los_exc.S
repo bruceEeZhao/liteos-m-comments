@@ -171,19 +171,19 @@ HalTrapEntry:
 .equ TRAP_INTERRUPT_MODE_MASK, 0x80000000
 .align 4
 HalTrapVector:
-    PUSH_CALLER_REG
-    csrr  a0, mcause
-    li    a1, TRAP_INTERRUPT_MODE_MASK
-    li    a2, MCAUSE_INT_ID_MASK
-    and   a1, a0, a1
+    PUSH_CALLER_REG   # 保存现场
+    csrr  a0, mcause  # Machine trap cause.寄存器最高位表示中断位，为1表示是一个中断
+    li    a1, TRAP_INTERRUPT_MODE_MASK  # a1 = 0x80000000
+    li    a2, MCAUSE_INT_ID_MASK # a2 = 0x7FFFFFF
+    and   a1, a0, a1 
     and   a0, a2, a0
-    beqz  a1, HalTrapEntry
-    csrw  mscratch, sp
+    beqz  a1, HalTrapEntry # 最高位是0,表示是一个trap，进入trap处理
+    csrw  mscratch, sp     # mscratch用于保存指向机器模式hart本地上下文空间的指针，并在进入m模式trap处理程序时与用户寄存器进行交换
     la    sp, __start_and_irq_stack_top
     jal   HalHwiInterruptDone
-    csrr  sp, mscratch
+    csrr  sp, mscratch     # 恢复sp
     call  HalIrqEndCheckNeedSched
 
-    POP_CALLER_REG
+    POP_CALLER_REG  # 恢复现场
     mret
 #endif /* _LOS_TRAP_S */
