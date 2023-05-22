@@ -490,11 +490,14 @@ LITE_OS_SEC_TEXT VOID *OsQueueMailAlloc(UINT32 queueID, VOID *mailPool, UINT32 t
     }
 
     intSave = LOS_IntLock();
+
+    // 获取queueCB
     queueCB = GET_QUEUE_HANDLE(queueID);
     if (queueCB->queueState == OS_QUEUE_UNUSED) {
         goto END;
     }
 
+    // 从静态内存池申请内存
     mem = LOS_MemboxAlloc(mailPool);
     if (mem == NULL) {
         if (timeOut == LOS_NO_WAIT) {
@@ -502,6 +505,7 @@ LITE_OS_SEC_TEXT VOID *OsQueueMailAlloc(UINT32 queueID, VOID *mailPool, UINT32 t
         }
 
         runTsk = (LosTaskCB *)g_losTask.runTask;
+        // 加入memList，进行等待
         OsSchedTaskWait(&queueCB->memList, timeOut);
         LOS_IntRestore(intSave);
         LOS_Schedule();
