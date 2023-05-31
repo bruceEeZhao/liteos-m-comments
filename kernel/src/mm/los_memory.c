@@ -746,23 +746,37 @@ STATIC INLINE struct OsMemFreeNodeHead *OsMemFindCurSuitableBlock(struct OsMemPo
     return NULL;
 }
 
+// 从二级区间进行查找
 STATIC INLINE UINT32 OsMemNotEmptyIndexGet(struct OsMemPoolHead *poolHead, UINT32 index)
 {
     /* 5: Divide by 32 to calculate the index of the bitmap array. */
+    // 取出index对应的mask
     UINT32 mask = poolHead->freeListBitmap[index >> 5];
+    // index & OS_MEM_BITMAP_MASK 为了计算index相对31偏移的位置
+    // 1 << n 位，是为了计算index对应的mask位
+    // -1 ，index对应的位置0,小于index的位置置1
+    // 取反，大于等于index的对应的位置值1，其他为0
     mask &= ~((1 << (index & OS_MEM_BITMAP_MASK)) - 1);
+    // mask > 0表示，有大于等于index的内存块的链表不为空
     if (mask != 0) {
+        // index & ~OS_MEM_BITMAP_MASK 相当于 32 * n
+        // 找到对应的index
         index = OsMemFFS(mask) + (index & ~OS_MEM_BITMAP_MASK);
         return index;
     }
 
     return OS_MEM_FREE_LIST_COUNT;
 }
+// 假设index = 40, mask = 0x0000 0100
+// 1. mask = poolHead->freeListBitmap[1]
+// 2. mask &= ~((1 <<(40 & 31)) - 1)  ---> mask &= ~((1 << 8) - 1) 
+//     ---> mask &= 0xFFFF FF00 ---> mask = 0x0000 0100
+// 3. index = 8 + 32 = 40
 
 /**
  * @brief 根据size计算一级index(fl)和二级index(sl)，并计算最终的 curIndex
- *        如果fl<31，则调用OsMemNotEmptyIndexGet从 fl 对应的级别取一个内存块，成功则返回
- *        查看更大量级（curIndex 对应的下一个级别）内存块的 bitmap ，如果 bitmap 不为0，则返回该 index
+ *        调用OsMemNotEmptyIndexGet从 index 对应的级别取一个内存块，成功则返回
+ *        检查一级区间，查看更大量级（curIndex 对应的下一个级别）内存块的 bitmap ，如果 bitmap 不为0，则返回该 index
  *        若上述均失败：
  *          遍历当前量级（curIndex）对应的链表，直到找到一个大于所需空间的内存块
  *        
@@ -791,7 +805,7 @@ STATIC INLINE struct OsMemFreeNodeHead *OsMemFindNextSuitableBlock(VOID *pool, U
             index = curIndex + 1;
         }
 
-        // 如果fl < 31
+        // 查找index对应的链表有无合适的块，对于大于128的块，检查二级区间
         tmp = OsMemNotEmptyIndexGet(poolHead, index);
         // 如果找到合适的元素
         if (tmp != OS_MEM_FREE_LIST_COUNT) {
@@ -1001,6 +1015,8 @@ STATIC UINT32 OsMemPoolInit(VOID *pool, UINT32 size)
     struct OsMemPoolHead *poolHead = (struct OsMemPoolHead *)pool;
     struct OsMemNodeHead *newNode = NULL;
     struct OsMemNodeHead *endNode = NULL;
+
+// 实时检测内存合法性的调测工具
 #ifdef LOSCFG_KERNEL_LMS
     UINT32 resize = 0;
     if (g_lms != NULL) {
